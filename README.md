@@ -16,12 +16,12 @@ A baseball analytics tool for Georgia Tech Baseball.
    cd GT_Baseball_6thTool
 
 2. **Create a virtual environment**
+   Your terminal prompt should now show (venv) at the beginning.
+   ```bash
     python3 -m venv venv
     source venv/bin/activate
-
-    Your terminal prompt should now show (venv) at the beginning.
-
-3. **Install dependencies**
+   
+4. **Install dependencies**
 
     Option A: Use updated package versions (Recommended)
 
