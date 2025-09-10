@@ -1,0 +1,216 @@
+Inning,AtBat,PitcherName,BatterName,Result,PitchVelo,BatterTimeToFirst,BatterTop,ExitVelo,LaunchAng,ActualDistance,BaserunnerMaxSpeed,BaserunnerInitial,BaserunnerSecondary,BaserunnerFinal,IsEventPlayer,EventPlayerName,FielderProbability,FielderRouteEfficiency,FielderMove,FielderReaction,FielderReactionAngle,FielderTransfer,FielderThrow,FielderThrowDistance,FielderMaxSpeed
+1,1,Brady Jones,Lucas Moore,Ball,94.4011,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+1,1,Brady Jones,Lucas Moore,Ball,94.5557,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+1,1,Brady Jones,Lucas Moore,Ball,94.603,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+1,1,Brady Jones,Lucas Moore,Strike Looking,93.2282,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+1,1,Brady Jones,Lucas Moore,Strike Swinging,88.8725,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+1,1,Brady Jones,Lucas Moore,Ball Walk,95.4355,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+1,2,Brady Jones,Alex Alicea,Ball,87.6505,,,,,,,13.8035,16.4396,18.726,True,Lackey Vahn,,,,,,,,,
+1,2,Brady Jones,Alex Alicea,Ball,94.8701,,0.2239,,,,19.8284,14.6305,23.0437,32.2642,True,Lackey Vahn,,,,,,0.66,76.9108,126.4367,4.0768
+1,2,Brady Jones,Alex Alicea,Foul Ball,85.6965,,,,,,,19.4413,25.3584,26.1124,False,,,,,,,,,,
+1,2,Brady Jones,Alex Alicea,In Play Sacrifice Bunt,88.1104,4.171,18.401,24.9694,-30.3777,5.4405,17.4354,17.8832,19.3597,22.1029,True,Jones Brady,,99.52,21.597,0.495,6.8563,0.825,75.3887,72.97,9.6576
+1,3,Brady Jones,Zion Rose,Strike Looking,96.231,,,,,,,11.7065,14.8567,17.4442,True,Lackey Vahn,,,,,,,,,
+1,3,Brady Jones,Zion Rose,In Play Fly Out,90.4585,,10.4195,97.3258,81.8071,49.523,6.0633,11.7507,15.129,17.5698,True,Lackey Vahn,,88.02,47.8877,1.683,17.8521,,,,8.7088
+1,4,Brady Jones,Jake Munroe,Ball,95.1988,,,,,,,13.9425,16.53,18.8538,True,Lackey Vahn,,,,,,,,,
+1,4,Brady Jones,Jake Munroe,Ball,94.9393,,,,,,,13.1801,15.9328,18.2036,True,Lackey Vahn,,,,,,,,,
+1,4,Brady Jones,Jake Munroe,Ball,88.3084,,,,,,,12.0415,15.0664,17.7584,True,Lackey Vahn,,,,,,,,,
+1,4,Brady Jones,Jake Munroe,Ball Walk,94.4027,,,,,,,12.336,15.2141,17.1569,True,Lackey Vahn,,,,,,,,,
+1,5,Brady Jones,Eddie King Jr.,Strike Looking,95.876,,,,,,,11.9318,12.8796,15.5105,True,Lackey Vahn,,,,,,,,,
+1,5,Brady Jones,Eddie King Jr.,Ball,88.0815,,,,,,,11.4409,12.2742,14.5903,True,Lackey Vahn,,,,,,,,,
+1,5,Brady Jones,Eddie King Jr.,In Play Fly Out,93.7222,,14.8419,59.5814,52.9768,148.1692,15.5146,11.5055,12.6168,14.7437,True,Baker Will,,50.42,14.7234,1.188,51.035,,,,7.87
+1,6,Patrick Forbes,Drew Burress,Ball,95.228,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+1,6,Patrick Forbes,Drew Burress,Ball,82.0186,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+1,6,Patrick Forbes,Drew Burress,Strike Looking,93.4309,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+1,6,Patrick Forbes,Drew Burress,Foul Ball,96.9421,,,,,,,,,,False,,,,,,,,,,
+1,6,Patrick Forbes,Drew Burress,Ball,82.4085,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+1,6,Patrick Forbes,Drew Burress,Ball Walk,96.4017,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+1,7,Patrick Forbes,Kent Schmidt,Strike Looking,94.834,,,,,,,11.0679,13.8989,18.0195,True,Tyson Tagger,,,,,,,,,
+1,7,Patrick Forbes,Kent Schmidt,Foul Ball,95.7566,,,,,,,11.3053,15.9292,19.1349,False,,,,,,,,,,
+1,7,Patrick Forbes,Kent Schmidt,Ball,97.3921,,,,,,,11.3301,14.3115,18.3125,True,Tyson Tagger,,,,,,,,,
+1,7,Patrick Forbes,Kent Schmidt,Foul Ball,96.5105,,,,,,,11.4768,14.5771,18.1239,False,,,,,,,,,,
+1,7,Patrick Forbes,Kent Schmidt,Foul Ball,88.4047,,,,,,,11.4599,16.4284,18.2066,False,,,,,,,,,,
+1,7,Patrick Forbes,Kent Schmidt,In Play Single,82.9959,4.585,16.9534,84.8,5.966,112.7233,19.324,11.1148,14.2354,17.7982,True,Moore Lucas,0.00,98.14,58.6595,1.122,7.3464,1.188,58.2645,121.5771,15.1927
+1,8,Patrick Forbes,Kyle Lodise,In Play Single,95.0587,4.46,18.3323,103.6568,-4.1942,21.435,17.1991,9.1196,12.2159,14.3793,True,Rose Zion,0.00,99.29,48.332,1.188,10.2079,1.485,42.9927,100.0377,11.8754
+1,9,Patrick Forbes,Alex Hernandez,Ball,82.9715,,,,,,,17.0232,17.8085,18.0826,True,Tyson Tagger,,,,,,,,,
+1,9,Patrick Forbes,Alex Hernandez,Ball,90.1292,,,,,,,17.1655,19.8448,20.663,True,Tyson Tagger,,,,,,,,,
+1,9,Patrick Forbes,Alex Hernandez,Strike Looking,97.6193,,,,,,,17.381,18.2367,20.0286,True,Tyson Tagger,,,,,,,,,
+1,9,Patrick Forbes,Alex Hernandez,In Play Fielder's Choice,95.5132,4.429,19.3847,102.2563,-2.4184,36.0279,18.0089,16.4009,17.7446,18.871,True,Alicea Alex,,91.97,14.5204,1.122,0.5202,0.957,49.2639,49.2045,10.6689
+1,10,Patrick Forbes,Caleb Daniel,Strike Looking,95.2146,,,,,,,14.2784,14.7255,16.2667,True,Tyson Tagger,,,,,,,,,
+1,10,Patrick Forbes,Caleb Daniel,Ball,91.0806,,3.6866,,,,7.7824,12.7637,14.8071,16.5188,True,Tyson Tagger,,,,,,0.627,76.4266,111.7164,9.8743
+1,10,Patrick Forbes,Caleb Daniel,Strike Swinging,96.0204,,,,,,,12.205,13.6061,15.7129,False,,,,,,,,,,
+1,10,Patrick Forbes,Caleb Daniel,Foul Ball,96.5061,,,,,,,11.0733,14.1094,16.4516,False,,,,,,,,,,
+1,10,Patrick Forbes,Caleb Daniel,Foul Ball,89.3479,,,,,,,11.2728,13.8835,16.0713,True,Tyson Tagger,,,,,,,,,
+1,10,Patrick Forbes,Caleb Daniel,Ball,82.4444,,12.6127,,,,16.1814,11.2132,14.0856,16.0951,True,Tyson Tagger,,,,,,1.353,70.0454,86.2342,2.6814
+1,10,Patrick Forbes,Caleb Daniel,Strike Swinging Strike Out Looking,95.8155,,,,,,,14.2461,15.9017,18.4394,True,Tyson Tagger,,,,,,,,,
+1,11,Patrick Forbes,Vahn Lackey,Ball,94.947,,,,,,,18.4365,19.5218,21.7508,True,Tyson Tagger,,,,,,,,,
+1,11,Patrick Forbes,Vahn Lackey,Ball,95.091,,,,,,,19.4496,20.2531,22.2125,True,Tyson Tagger,,,,,,,,,
+1,11,Patrick Forbes,Vahn Lackey,Ball,92.0021,,,,,,,16.333,17.7466,20.0956,True,Tyson Tagger,,,,,,,,,
+1,11,Patrick Forbes,Vahn Lackey,In Play Single,94.7361,4.444,19.153,90.1654,12.9923,256.2093,18.6637,18.5667,21.1643,23.5237,True,Moore Lucas,13.42,95.57,31.8707,1.056,3.1668,1.254,87.0001,175.2211,11.3921
+1,12,Patrick Forbes,Will Baker,Ball,84.2455,,1.6176,,,,18.296,9.1611,13.1742,15.8769,True,Tyson Tagger,,,,,,0.627,74.3852,151.2983,10.4837
+1,12,Patrick Forbes,Will Baker,Ball,95.8932,,,,,,,14.6846,17.9335,21.1547,True,Tyson Tagger,,,,,,,,,
+1,12,Patrick Forbes,Will Baker,Strike Looking,94.5318,,,,,,,14.9771,18.8062,22.1593,True,Tyson Tagger,,,,,,,,,
+1,12,Patrick Forbes,Will Baker,Strike Looking,95.3666,,,,,,,14.5419,18.4517,21.8178,True,Tyson Tagger,,,,,,,,,
+1,12,Patrick Forbes,Will Baker,Foul Ball,93.6363,,,,,,,14.7967,18.0344,20.9688,False,,,,,,,,,,
+1,12,Patrick Forbes,Will Baker,Ball,94.1688,,,,,,,14.2853,17.7835,21.7156,True,Tyson Tagger,,,,,,,,,
+1,12,Patrick Forbes,Will Baker,Ball Walk,84.9176,,,,,,,14.2149,16.9802,20.6485,True,Tyson Tagger,,,,,,,,,
+1,13,Patrick Forbes,Carson Kerce,Ball,93.2148,,0.8152,,,,15.5776,18.3713,22.1588,24.2257,True,Tyson Tagger,,,,,,,,,10.1368
+1,13,Patrick Forbes,Carson Kerce,Strike Looking,90.8636,,,,,,,16.9101,17.6438,17.8742,True,Tyson Tagger,,,,,,,,,
+1,13,Patrick Forbes,Carson Kerce,Strike Swinging,83.4615,,,,,,,20.0813,21.3707,21.8506,True,Tyson Tagger,,,,,,,,,
+1,13,Patrick Forbes,Carson Kerce,Foul Ball,92.7068,,,,,,,19.6343,20.4679,20.6894,False,,,,,,,,,,
+1,13,Patrick Forbes,Carson Kerce,Strike Swinging Strike Out Looking,81.6111,,,,,,,21.4441,23.6163,24.4344,True,Tyson Tagger,,,,,,,,,
+2,14,Brady Jones,Garret Pike,Strike Looking,93.1753,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,14,Brady Jones,Garret Pike,Strike Swinging,93.7272,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,14,Brady Jones,Garret Pike,In Play Fly Out,83.2208,4.781,17.3295,87.4925,37.3475,294.8057,,,,,True,Hernandez Alex,100.00,64.88,9.5945,1.98,12.1164,,,,4.944
+2,15,Brady Jones,Bayram Hot,Strike Swinging,87.4971,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,15,Brady Jones,Bayram Hot,Strike Swinging,94.5365,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,15,Brady Jones,Bayram Hot,Foul Ball,95.014,,,,,,,,,,False,,,,,,,,,,
+2,15,Brady Jones,Bayram Hot,Ball,94.9883,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,15,Brady Jones,Bayram Hot,Ball,88.9411,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,15,Brady Jones,Bayram Hot,Foul Ball,94.615,,,,,,,,,,False,,,,,,,,,,
+2,15,Brady Jones,Bayram Hot,Strike Swinging Strike Out Swinging,85.1436,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,16,Brady Jones,Tague Davis,Ball,82.128,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,16,Brady Jones,Tague Davis,Ball,94.327,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,16,Brady Jones,Tague Davis,Strike Swinging,88.4558,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,16,Brady Jones,Tague Davis,Foul Ball,87.4977,,,,,,,,,,False,,,,,,,,,,
+2,16,Brady Jones,Tague Davis,Strike Swinging Strike Out Swinging,84.1245,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+2,17,Patrick Forbes,Drew Rogers,Strike Looking,93.6845,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+2,17,Patrick Forbes,Drew Rogers,Strike Looking,81.5785,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+2,17,Patrick Forbes,Drew Rogers,Strike Swinging Strike Out Swinging,82.5538,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+2,18,Patrick Forbes,Drew Burress,Strike Swinging,80.0695,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+2,18,Patrick Forbes,Drew Burress,In Play Double,93.5065,4.348,19.5307,107.3893,4.8015,78.091,,,,,True,Rose Zion,0.00,,89.6807,1.254,19.578,0.957,73.2039,184.3231,18.0067
+2,19,Patrick Forbes,Kent Schmidt,Ball,92.6961,,,,,,,17.0477,19.1697,22.4015,True,Tyson Tagger,,,,,,,,,
+2,19,Patrick Forbes,Kent Schmidt,Strike Looking,88.4889,,,,,,,17.131,19.0588,23.4628,True,Tyson Tagger,,,,,,,,,
+2,19,Patrick Forbes,Kent Schmidt,Foul Ball,93.0362,,,,,,,16.2879,18.9469,22.48,False,,,,,,,,,,
+2,19,Patrick Forbes,Kent Schmidt,Strike Looking Strike Out Looking,91.2857,,,,,,,16.294,19.1838,23.7654,True,Tyson Tagger,,,,,,,,,
+2,20,Patrick Forbes,Kyle Lodise,Ball,82.5357,,,,,,,16.7624,19.8723,24.2424,True,Tyson Tagger,,,,,,,,,
+2,20,Patrick Forbes,Kyle Lodise,Strike Swinging,81.595,,,,,,,16.4831,19.774,24.079,True,Tyson Tagger,,,,,,,,,
+2,20,Patrick Forbes,Kyle Lodise,Ball,92.9284,,3.8825,,,,17.1762,16.6555,20.4754,24.4338,True,Tyson Tagger,,,,,,,,,10.6018
+2,20,Patrick Forbes,Kyle Lodise,Ball,78.6804,,,,,,,16.7374,19.7133,22.9662,True,Tyson Tagger,,,,,,,,,
+2,20,Patrick Forbes,Kyle Lodise,Foul Ball,92.6138,,,,,,,15.2217,20.3004,22.5282,False,,,,,,,,,,
+2,20,Patrick Forbes,Kyle Lodise,Foul Ball,90.5867,,,,,,,19.9441,22.7507,25.2569,False,,,,,,,,,,
+2,20,Patrick Forbes,Kyle Lodise,In Play Ground Out,93.9917,4.266,19.2786,87.0196,5.4973,59.057,11.7702,13.3644,17.8045,21.757,True,Munroe Jake,,69.36,2.2801,1.881,4.2374,1.122,81.7361,139.3586,5.749
+3,21,Brady Jones,Tagger Tyson,In Play Fly Out,85.8735,4.846,17.3006,93.1238,39.0353,326.1853,,,,,True,Burress Drew,99.99,66.86,44.3323,1.386,14.5339,,,,11.7285
+3,22,Brady Jones,Lucas Moore,Ball,93.4121,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+3,22,Brady Jones,Lucas Moore,Strike Looking,87.2786,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+3,22,Brady Jones,Lucas Moore,Ball,82.1344,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+3,22,Brady Jones,Lucas Moore,In Play Fly Out,87.7911,4.646,19.237,79.4129,70.1147,147.2431,,,,,True,Lodise Kyle,,98.60,121.9142,0.858,17.0267,,,,18.8264
+3,23,Brady Jones,Alex Alicea,In Play Fly Out,88.4646,,15.3867,86.2409,20.2427,253.3807,,,,,True,Hernandez Alex,76.72,94.59,36.302,1.353,32.9598,,,,13.8888
+3,24,Patrick Forbes,Alex Hernandez,Strike Looking,92.3667,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+3,24,Patrick Forbes,Alex Hernandez,Strike Swinging,81.6504,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+3,24,Patrick Forbes,Alex Hernandez,Strike Swinging Strike Out Swinging,80.0713,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+3,25,Patrick Forbes,Caleb Daniel,Strike Looking,92.6512,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+3,25,Patrick Forbes,Caleb Daniel,Ball,94.7831,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+3,25,Patrick Forbes,Caleb Daniel,Ball,92.8194,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+3,25,Patrick Forbes,Caleb Daniel,Ball,81.8447,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+3,25,Patrick Forbes,Caleb Daniel,Foul Ball,94.224,,,,,,,,,,False,,,,,,,,,,
+3,25,Patrick Forbes,Caleb Daniel,In Play Double,93.3508,4.493,18.612,95.7465,23.5141,296.1355,,,,,True,Rose Zion,22.20,,63.057,0.99,18.8639,0.99,58.9276,183.3603,17.6644
+3,26,Patrick Forbes,Vahn Lackey,Strike Looking,80.1315,,,,,,,16.837,18.22,20.9543,True,Tyson Tagger,,,,,,,,,
+3,26,Patrick Forbes,Vahn Lackey,Foul Ball,95.995,,,,,,,17.2304,20.2477,22.7793,False,,,,,,,,,,
+3,26,Patrick Forbes,Vahn Lackey,Foul Ball,93.6934,,,,,,,16.7663,19.4119,22.1606,False,,,,,,,,,,
+3,26,Patrick Forbes,Vahn Lackey,Foul Ball,81.619,,,,,,,16.4297,19.2009,22.1855,False,,,,,,,,,,
+3,26,Patrick Forbes,Vahn Lackey,Strike Swinging Strike Out Swinging,81.6574,,,,,,,16.0735,19.6125,23.3664,True,Tyson Tagger,,,,,,,,,
+3,27,Patrick Forbes,Will Baker,Ball,82.0372,,,,,,,15.384,18.2519,21.5657,True,Tyson Tagger,,,,,,,,,
+3,27,Patrick Forbes,Will Baker,Strike Looking,81.7108,,,,,,,16.5002,19.7219,23.0994,True,Tyson Tagger,,,,,,,,,
+3,27,Patrick Forbes,Will Baker,Ball,91.8212,,,,,,,16.2587,18.3151,21.377,True,Tyson Tagger,,,,,,,,,
+3,27,Patrick Forbes,Will Baker,Foul Ball,95.0737,,,,,,,16.3096,19.2205,21.7146,False,,,,,,,,,,
+3,27,Patrick Forbes,Will Baker,In Play Fly Out,82.0237,4.818,16.6408,92.1146,32.1758,321.2323,15.8613,15.8283,18.6468,21.3143,True,King Jr. Eddie,96.57,97.33,58.3734,1.221,3.0201,,,,13.7261
+4,28,Brady Jones,Zion Rose,Strike Looking,91.5621,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+4,28,Brady Jones,Zion Rose,In Play Ground Out,81.8561,4.681,17.6098,72.9423,-5.8261,14.9639,,,,,True,Lodise Kyle,,83.27,5.2441,1.65,9.6262,1.023,79.1545,116.3958,5.3353
+4,29,Brady Jones,Jake Munroe,Ball,84.1516,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+4,29,Brady Jones,Jake Munroe,Ball,94.4395,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+4,29,Brady Jones,Jake Munroe,Strike Swinging,85.5009,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+4,29,Brady Jones,Jake Munroe,Strike Looking,84.93,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+4,29,Brady Jones,Jake Munroe,Ball,84.714,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+4,29,Brady Jones,Jake Munroe,Ball Walk,95.095,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+4,30,Brady Jones,Eddie King Jr.,Strike Looking,94.076,,,,,,,13.3852,14.6093,17.4326,True,Lackey Vahn,,,,,,,,,
+4,30,Brady Jones,Eddie King Jr.,Ball,87.252,,,,,,,11.4191,13.0036,15.5263,True,Lackey Vahn,,,,,,,,,
+4,30,Brady Jones,Eddie King Jr.,Foul Ball,95.1767,,,,,,,11.5094,12.6363,14.7683,False,,,,,,,,,,
+4,30,Brady Jones,Eddie King Jr.,Strike Swinging Strike Out Swinging,94.8206,,,,,,,12.4797,13.7575,16.2587,True,Lackey Vahn,,,,,,,,,
+4,31,Brady Jones,Garret Pike,Ball,95.4283,,,,,,,12.0927,12.7274,15.4046,True,Lackey Vahn,,,,,,,,,
+4,31,Brady Jones,Garret Pike,Foul Ball,87.5069,,,,,,,11.6909,12.9328,15.8244,False,,,,,,,,,,
+4,31,Brady Jones,Garret Pike,Foul Ball,91.6008,,,,,,,11.9561,12.7727,15.0757,False,,,,,,,,,,
+4,31,Brady Jones,Garret Pike,Foul Ball,94.4765,,,,,,,12.1611,12.861,14.9997,False,,,,,,,,,,
+4,31,Brady Jones,Garret Pike,In Play Fly Out,95.0435,4.945,17.003,88.8917,28.9147,320.0178,16.9559,11.1085,12.3296,15.2362,True,Daniel Caleb,99.69,95.47,39.6539,1.089,25.6817,,,,9.487
+4,32,Patrick Forbes,Carson Kerce,Ball,82.3774,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+4,32,Patrick Forbes,Carson Kerce,Strike Looking,91.5437,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+4,32,Patrick Forbes,Carson Kerce,In Play Ground Out,80.4221,4.324,19.0961,89.0772,8.1302,78.4793,,,,,True,Munroe Jake,,99.13,5.9342,0.99,2.5595,1.32,76.7511,127.2003,4.7082
+4,33,Patrick Forbes,Drew Rogers,Foul Ball,94.0917,,,,,,,,,,False,,,,,,,,,,
+4,33,Patrick Forbes,Drew Rogers,In Play Ground Out,94.2354,4.656,17.6564,73.0671,-8.663,11.7066,,,,,True,Alicea Alex,,92.66,12.4491,1.122,4.4766,1.056,74.858,122.1785,7.612
+4,34,Patrick Forbes,Drew Burress,Strike Looking,80.398,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+4,34,Patrick Forbes,Drew Burress,In Play Fly Out,85.8432,5.317,17.7523,110.7681,57.1367,213.6418,,,,,True,Rose Zion,94.59,99.19,107.8143,1.716,2.9613,,,,19.5785
+5,35,Brady Jones,Bayram Hot,Strike Looking,80.6001,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+5,35,Brady Jones,Bayram Hot,Ball,94.2609,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+5,35,Brady Jones,Bayram Hot,Strike Swinging,92.9422,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+5,35,Brady Jones,Bayram Hot,Ball,82.3271,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+5,35,Brady Jones,Bayram Hot,Strike Looking Strike Out Looking,94.6169,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+5,36,Brady Jones,Tague Davis,Strike Swinging,86.8325,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+5,36,Brady Jones,Tague Davis,Ball,93.8273,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+5,36,Brady Jones,Tague Davis,Foul Ball,81.7365,,,,,,,,,,False,,,,,,,,,,
+5,36,Brady Jones,Tague Davis,In Play Ground Out,93.7242,4.777,16.4062,60.009,-7.9955,12.7891,,,,,True,Lodise Kyle,,89.20,,,,1.287,68.0438,81.6128,3.4301
+5,37,Brady Jones,Tagger Tyson,Ball,88.7774,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+5,37,Brady Jones,Tagger Tyson,In Play Ground Out,93.1137,4.479,19.059,61.2611,8.8658,87.1789,,,,,True,Baker Will,,89.27,10.2657,1.485,8.5521,0.99,69.0731,72.9226,7.8334
+5,38,TJ Schlageter,Kent Schmidt,Strike Looking,87.685,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+5,38,TJ Schlageter,Kent Schmidt,Ball,74.876,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+5,38,TJ Schlageter,Kent Schmidt,In Play Fly Out,71.0385,5.151,15.4372,104.6511,24.2702,312.516,,,,,True,Moore Lucas,99.48,70.66,30.93,1.155,39.0323,,,,11.0158
+5,39,TJ Schlageter,Kyle Lodise,Ball,88.7986,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+5,39,TJ Schlageter,Kyle Lodise,Ball,76.4394,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+5,39,TJ Schlageter,Kyle Lodise,Ball,87.5323,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+5,39,TJ Schlageter,Kyle Lodise,Strike Looking,88.1502,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+5,39,TJ Schlageter,Kyle Lodise,Ball Walk,87.8002,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+5,40,TJ Schlageter,Alex Hernandez,Ball,74.9324,,,,,,,12.0708,13.7928,17.5442,True,Tyson Tagger,,,,,,,,,
+5,40,TJ Schlageter,Alex Hernandez,Strike Swinging,77.0483,,,,,,,12.3906,13.207,17.498,True,Tyson Tagger,,,,,,,,,
+5,40,TJ Schlageter,Alex Hernandez,In Play Single,87.0493,4.549,19.5175,99.4336,5.7593,54.5779,14.6692,12.3387,14.143,17.2769,True,Schlageter TJ,,,,,,,,,4.9524
+5,41,Ty Starke,Caleb Daniel,Ball,84.3663,,,,,,,14.6165,14.4481,14.3994,True,Tyson Tagger,,,,,,,,,
+5,41,Ty Starke,Caleb Daniel,Foul Ball,74.7321,,,,,,,15.8744,17.4032,17.9348,False,,,,,,,,,,
+5,41,Ty Starke,Caleb Daniel,Foul Ball,74.1641,,,,,,,15.1451,18.3765,20.4695,False,,,,,,,,,,
+5,41,Ty Starke,Caleb Daniel,Strike Looking Strike Out Looking,85.1508,,,,,,,16.7745,18.7407,19.4289,True,Tyson Tagger,,,,,,,,,
+6,42,Brady Jones,Lucas Moore,Foul Ball,92.995,,,,,,,,,,False,,,,,,,,,,
+6,42,Brady Jones,Lucas Moore,Strike Looking,94.722,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+6,42,Brady Jones,Lucas Moore,Foul Ball,94.2923,,,,,,,,,,False,,,,,,,,,,
+6,42,Brady Jones,Lucas Moore,Ball,95.2515,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+6,42,Brady Jones,Lucas Moore,Strike Swinging Strike Out Swinging,84.2148,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+6,43,Brady Jones,Alex Alicea,In Play Fly Out,88.9992,5.378,15.2898,86.5212,33.1368,289.413,,,,,True,Daniel Caleb,99.99,32.49,4.9731,1.815,54.6144,,,,4.1545
+6,44,Brady Jones,Zion Rose,Ball,88.6956,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+6,44,Brady Jones,Zion Rose,Foul Ball,85.0925,,,,,,,,,,False,,,,,,,,,,
+6,44,Brady Jones,Zion Rose,In Play Ground Out,93.7833,,14.5259,91.7755,1.4519,67.038,,,,,True,Schmidt Kent,,61.48,,,,,,,9.0723
+6,45,Ty Starke,Vahn Lackey,Strike Looking,83.9583,,,,,,,,,,True,Tyson Tagger,,,,,,,,,
+6,45,Ty Starke,Vahn Lackey,In Play Single,85.7572,4.49,18.3465,85.865,7.4645,137.4611,,,,,True,Alicea Alex,,,9.3952,1.122,5.8829,,,,10.0673
+6,46,Ty Starke,John Giesler,Foul Ball,70.6809,,0.1425,,,,5.3811,10.8708,12.1976,15.6663,False,,,,,,,,,,
+6,46,Ty Starke,John Giesler,Ball,73.6765,,,,,,,9.4259,11.9649,16.4569,True,Tyson Tagger,,,,,,,,,
+6,46,Ty Starke,John Giesler,Foul Ball,73.5993,,,,,,,10.5637,13.4819,17.5587,False,,,,,,,,,,
+6,46,Ty Starke,John Giesler,Ball,85.5761,,,,,,,9.6767,12.1854,14.9264,True,Tyson Tagger,,,,,,,,,
+6,46,Ty Starke,John Giesler,Foul Ball,84.2271,,,,,,,10.4703,14.1093,16.849,False,,,,,,,,,,
+6,46,Ty Starke,John Giesler,Foul Ball,84.085,,,,,,,13.9305,16.7914,17.6623,False,,,,,,,,,,
+6,46,Ty Starke,John Giesler,Strike Swinging Strike Out Swinging,76.0976,,,,,,,10.9846,13.4142,17.643,True,Tyson Tagger,,,,,,,,,
+6,47,Ty Starke,Carson Kerce,Ball,74.0081,,,,,,,11.2908,13.0738,17.4902,True,Tyson Tagger,,,,,,,,,
+6,47,Ty Starke,Carson Kerce,Strike Looking,74.9154,,,,,,,13.1249,15.3871,16.2245,True,Tyson Tagger,,,,,,,,,
+6,47,Ty Starke,Carson Kerce,In Play Single,83.2125,4.089,18.9893,28.8241,-15.0084,7.8917,18.6211,11.6621,14.2524,16.4854,True,Munroe Jake,,99.78,48.549,0.396,3.7006,0.528,69.3337,95.0398,15.8222
+6,48,Ty Starke,Drew Rogers,Strike Looking,73.1969,,,,,,,18.595,20.3456,20.9926,True,Tyson Tagger,,,,,,,,,
+6,48,Ty Starke,Drew Rogers,Foul Ball,83.9344,,,,,,,18.6222,20.4006,20.9418,False,,,,,,,,,,
+6,48,Ty Starke,Drew Rogers,In Play Error,73.4563,4.714,17.6573,86.3272,8.6512,137.1132,19.8327,16.5696,19.3097,21.7316,True,King Jr. Eddie,0.00,98.62,56.8126,1.155,0.2852,1.452,79.6073,161.21,14.2963
+6,49,Brennyn Cutts,Drew Burress,Ball,91.3087,,,,,,,12.7937,16.6133,19.3591,True,Tyson Tagger,,,,,,,,,
+6,49,Brennyn Cutts,Drew Burress,In Play Single,76.998,4.637,17.4297,90.3741,11.9518,184.3056,16.187,12.3914,15.1326,16.5861,True,Rose Zion,0.00,90.74,25.3751,1.056,1.9364,1.485,56.3204,129.2165,8.4434
+6,50,Brennyn Cutts,Kent Schmidt,Strike Looking,81.9791,,,,,,,13.6494,14.7568,17.2697,True,Tyson Tagger,,,,,,,,,
+6,50,Brennyn Cutts,Kent Schmidt,Foul Ball,89.8912,,,,,,,13.5158,15.073,17.8058,False,,,,,,,,,,
+6,50,Brennyn Cutts,Kent Schmidt,In Play Single,93.3523,4.772,16.6726,75.4009,19.8048,190.6121,19.4424,13.1615,14.2137,16.5128,True,Rose Zion,0.00,96.29,64.9556,0.99,24.0248,1.089,87.508,193.0621,16.595
+6,51,Brennyn Cutts,Kyle Lodise,Strike Swinging,78.3366,,,,,,,14.4506,16.4187,19.544,True,Tyson Tagger,,,,,,,,,
+6,51,Brennyn Cutts,Kyle Lodise,In Play Fly Out,91.917,4.851,17.2455,,65.6015,157.4287,15.41,15.9859,18.5824,20.4567,True,Alicea Alex,,62.43,38.5398,1.617,10.1968,,,,9.8109
+7,52,Brady Jones,Jake Munroe,In Play Ground Out,80.2266,4.257,19.2877,72.5116,-6.1343,15.5984,,,,,True,Lodise Kyle,,97.98,20.1267,0.924,14.7361,1.023,86.7878,94.04,9.1652
+7,53,Brady Jones,Eddie King Jr.,Strike Looking,80.7785,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+7,53,Brady Jones,Eddie King Jr.,In Play Ground Out,93.5967,4.456,18.4851,67.8975,-12.8445,7.8298,,,,,True,Lodise Kyle,,99.41,28.8081,0.726,8.9173,1.287,84.9739,80.4419,15.6051
+7,54,Brady Jones,Garret Pike,Ball,80.1773,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+7,54,Brady Jones,Garret Pike,Ball,92.7992,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+7,54,Brady Jones,Garret Pike,Strike Swinging,88.5568,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+7,54,Brady Jones,Garret Pike,Ball,89.795,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+7,54,Brady Jones,Garret Pike,Strike Swinging,92.5791,,,,,,,,,,True,Lackey Vahn,,,,,,,,,
+7,54,Brady Jones,Garret Pike,Foul Ball,89.5635,,,,,,,,,,False,,,,,,,,,,
+7,54,Brady Jones,Garret Pike,Foul Ball,88.4249,,,,,,,,,,False,,,,,,,,,,
+7,54,Brady Jones,Garret Pike,Foul Ball,82.4147,,,,,,,,,,False,,,,,,,,,,
+7,54,Brady Jones,Garret Pike,Foul Ball,95.6779,,,,,,,,,,False,,,,,,,,,,
+7,54,Brady Jones,Garret Pike,In Play Single,82.1956,4.761,16.4512,92.7764,12.9174,202.1076,,,,,True,Brosius Parker,0.00,95.15,31.5309,1.122,17.8702,1.386,62.3889,144.7347,11.8623
+7,55,Brady Jones,Bayram Hot,Ball,92.4072,,,,,,,14.0729,16.3654,19.9304,True,Lackey Vahn,,,,,,,,,
+7,55,Brady Jones,Bayram Hot,Strike Swinging,90.4224,,,,,,,14.1718,16.7845,20.1629,True,Lackey Vahn,,,,,,,,,
+7,55,Brady Jones,Bayram Hot,Foul Ball,78.5613,,,,,,,11.8116,13.687,16.7288,False,,,,,,,,,,
+7,55,Brady Jones,Bayram Hot,Foul Ball,95.5096,,,,,,,20.3336,26.4199,34.0304,False,,,,,,,,,,
+7,55,Brady Jones,Bayram Hot,Foul Ball,96.0296,,,,,,,18.7416,26.4992,33.5925,False,,,,,,,,,,
+7,55,Brady Jones,Bayram Hot,In Play Ground Out,79.5935,4.52,17.832,103.1341,-5.5921,20.7046,16.7495,20.4106,27.6467,36.7088,True,Kerce Carson,,60.54,,,,1.221,80.8204,126.2881,6.2358
