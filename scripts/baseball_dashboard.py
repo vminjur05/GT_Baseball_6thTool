@@ -424,6 +424,239 @@ class GTBaseballDashboard:
             fig_velocity_trend.update_yaxes(title="Average Velocity (mph)")
             st.plotly_chart(fig_velocity_trend, use_container_width=True)
     
+    # Add this method to GTBaseballDashboard class
+
+    def render_defensive_coaching_analysis(self, data):
+        """Render defensive coaching insights."""
+        st.header("🛡️ Defensive Coaching Analytics")
+        
+        from defensive_analytics import DefensiveAnalytics
+        defensive_analyzer = DefensiveAnalytics(data)
+        
+        # Fielder positioning analysis
+        st.subheader("Fielder Positioning Effectiveness")
+        positioning = defensive_analyzer.analyze_fielder_positioning()
+        
+        if 'error' not in positioning:
+            # Create positioning dataframe for display
+            pos_df = pd.DataFrame(positioning).T
+            st.dataframe(pos_df, use_container_width=True)
+            
+            # Visual insights
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Route efficiency by player
+                fig_route = px.bar(
+                    x=pos_df.index,
+                    y=pos_df['avg_route_efficiency'],
+                    title="Average Route Efficiency by Fielder",
+                    labels={'x': 'Fielder', 'y': 'Route Efficiency (%)'}
+                )
+                fig_route.add_hline(y=85, line_dash="dash", line_color="green",
+                                annotation_text="Target: 85%")
+                st.plotly_chart(fig_route, use_container_width=True)
+            
+            with col2:
+                # Reaction time coaching chart
+                fig_reaction = px.scatter(
+                    x=pos_df['avg_reaction_time'],
+                    y=pos_df['avg_route_efficiency'],
+                    text=pos_df.index,
+                    title="Reaction Time vs Route Efficiency",
+                    labels={'x': 'Avg Reaction Time (s)', 'y': 'Route Efficiency (%)'}
+                )
+                fig_reaction.add_vline(x=pos_df['avg_reaction_time'].mean(), 
+                                    line_dash="dash", annotation_text="Team Avg")
+                st.plotly_chart(fig_reaction, use_container_width=True)
+        
+        # Shift validation
+        st.subheader("Defensive Shift Effectiveness")
+        shift_analysis = defensive_analyzer.validate_defensive_shifts()
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("High Probability Catches", shift_analysis['high_probability_catches'])
+        with col2:
+            st.metric("Missed Opportunities", shift_analysis['missed_opportunities'])
+        with col3:
+            st.metric("Optimal Positioning Rate", f"{shift_analysis['optimal_positioning_rate']:.1f}%")
+        
+        # Coaching insights
+        st.subheader("Coaching Recommendations")
+        insights = defensive_analyzer.reaction_time_coaching_insights()
+        
+        if insights['players_needing_improvement']:
+            st.warning("**Players needing reaction time improvement:**")
+            for player in insights['players_needing_improvement']:
+                st.write(f"• {player}")
+        
+        if insights['top_performers']:
+            st.success("**Top defensive performers:**")
+            for player in insights['top_performers']:
+                st.write(f"• {player}")
+        
+        # Fielding heatmap
+        heatmap = defensive_analyzer.create_fielding_heatmap()
+        if heatmap:
+            st.subheader("Fielding Performance Heatmap")
+            st.plotly_chart(heatmap, use_container_width=True)
+
+    def render_coaching_reports(self, data):
+        """Generate automated coaching reports."""
+        st.header("📋 Coaching Reports & Insights")
+        
+        # Weekly summary generator
+        st.subheader("Game Summary Generator")
+        
+        if st.button("Generate Coaching Summary"):
+            summary = self.generate_coaching_summary(data)
+            st.text_area("Coaching Summary", summary, height=400)
+            
+            # Download button
+            st.download_button(
+                label="Download Coaching Report",
+                data=summary,
+                file_name=f"coaching_report_{pd.Timestamp.now().strftime('%Y%m%d')}.txt",
+                mime="text/plain"
+            )
+        
+        # Top 5 insights
+        st.subheader("Top 5 Game Insights")
+        insights = self.generate_top_insights(data)
+        
+        for i, insight in enumerate(insights, 1):
+            st.info(f"**{i}.** {insight}")
+
+    def generate_coaching_summary(self, data):
+        """Generate focused coaching summary."""
+        summary = []
+        summary.append("=" * 60)
+        summary.append("GT BASEBALL COACHING SUMMARY")
+        summary.append("=" * 60)
+        summary.append("")
+        
+        # Pitching insights
+        summary.append("🥎 PITCHING INSIGHTS:")
+        avg_velo = data['PitchVelo'].mean()
+        summary.append(f"• Team average velocity: {avg_velo:.1f} mph")
+        
+        # Strike rate analysis
+        strikes = data['PitchOutcome'].isin(['Strike', 'Foul']).sum()
+        strike_rate = strikes / len(data) * 100
+        summary.append(f"• Strike rate: {strike_rate:.1f}% {'✅' if strike_rate > 65 else '⚠️'}")
+        
+        # Individual pitcher focus
+        pitcher_stats = data.groupby('PitcherName').agg({
+            'PitchVelo': 'mean',
+            'PitchOutcome': lambda x: (x.isin(['Strike', 'Foul']).sum() / len(x) * 100)
+        }).round(1)
+        
+        lowest_strike_rate = pitcher_stats.loc[pitcher_stats['PitchOutcome'].idxmin()]
+        summary.append(f"• Focus area: {lowest_strike_rate.name} - {lowest_strike_rate['PitchOutcome']:.1f}% strike rate")
+        summary.append("")
+        
+        # Hitting insights
+        summary.append("🏏 HITTING INSIGHTS:")
+        hit_data = data[data['BallInPlay'] == True]
+        
+        if len(hit_data) > 0:
+            avg_exit_velo = hit_data['ExitVelo'].mean()
+            hard_hits = (hit_data['ExitVelo'] > 95).sum()
+            summary.append(f"• Average exit velocity: {avg_exit_velo:.1f} mph")
+            summary.append(f"• Hard hit balls (>95 mph): {hard_hits}")
+            
+            # Launch angle optimization
+            if 'LaunchAng' in hit_data.columns:
+                optimal_la = hit_data[(hit_data['LaunchAng'] >= 8) & (hit_data['LaunchAng'] <= 32)]
+                summary.append(f"• Optimal launch angles (8-32°): {len(optimal_la)} of {len(hit_data)}")
+        
+        summary.append("")
+        
+        # Defensive insights
+        summary.append("🛡️ DEFENSIVE INSIGHTS:")
+        field_data = data[(data['IsEventPlayer'] == True) & (data['EventPlayerName'].notna())]
+        
+        if len(field_data) > 0:
+            avg_route_eff = field_data['FielderRouteEfficiency'].mean()
+            summary.append(f"• Team route efficiency: {avg_route_eff:.1f}%")
+            
+            slow_reactions = field_data[field_data['FielderReaction'] > field_data['FielderReaction'].quantile(0.75)]
+            if len(slow_reactions) > 0:
+                summary.append(f"• Players needing reaction training: {len(slow_reactions)}")
+        
+        return "\n".join(summary)
+
+    def generate_top_insights(self, data):
+        """Generate top 5 actionable insights."""
+        insights = []
+        
+        # Pitching insights
+        if data['PitchVelo'].std() > 5:
+            insights.append("High velocity variance detected - work on consistent mechanics")
+        
+        # Strike rate insight
+        strikes = data['PitchOutcome'].isin(['Strike', 'Foul']).sum()
+        strike_rate = strikes / len(data) * 100
+        if strike_rate < 60:
+            insights.append(f"Strike rate below target (currently {strike_rate:.1f}%) - focus on command")
+        
+        # Exit velocity insight
+        hit_data = data[data['BallInPlay'] == True]
+        if len(hit_data) > 0:
+            hard_hit_rate = (hit_data['ExitVelo'] > 95).sum() / len(hit_data) * 100
+            if hard_hit_rate > 40:
+                insights.append(f"High hard-hit rate ({hard_hit_rate:.1f}%) - review pitch selection/location")
+        
+        # Fielding insight
+        field_data = data[(data['IsEventPlayer'] == True) & (data['EventPlayerName'].notna())]
+        if len(field_data) > 0:
+            low_efficiency = field_data[field_data['FielderRouteEfficiency'] < 80]
+            if len(low_efficiency) > 0:
+                insights.append(f"{len(low_efficiency)} fielding plays below 80% efficiency - positioning review needed")
+        
+        # Speed insight
+        if 'BatterTimeToFirst' in hit_data.columns:
+            avg_time = hit_data['BatterTimeToFirst'].mean()
+            if avg_time > 4.5:
+                insights.append(f"Average time to first base: {avg_time:.2f}s - speed training opportunity")
+        
+        return insights[:5]  # Return top 5 insights    
+
+    def render_video_analysis_prep(self, data):
+        """Prepare data for video analysis overlay."""
+        st.header("🎥 Video Analysis Preparation")
+        
+        st.info("This section prepares highlight data for video overlay integration")
+        
+        # High-value plays for video review
+        st.subheader("Plays Worth Video Review")
+        
+        # Hard hit balls
+        hard_hits = data[(data['ExitVelo'] > 95) & (data['BallInPlay'] == True)]
+        if len(hard_hits) > 0:
+            st.write("**Hard Hit Balls (>95 mph):**")
+            video_data = hard_hits[['Inning', 'AtBat', 'BatterName', 'ExitVelo', 'LaunchAng', 'Result']].round(1)
+            st.dataframe(video_data, use_container_width=True)
+        
+        # Exceptional fielding plays
+        field_data = data[(data['FielderProbability'] < 30) | (data['FielderRouteEfficiency'] > 95)]
+        if len(field_data) > 0:
+            st.write("**Exceptional Fielding Plays:**")
+            field_video = field_data[['Inning', 'AtBat', 'EventPlayerName', 'FielderProbability', 'FielderRouteEfficiency']].round(1)
+            st.dataframe(field_video, use_container_width=True)
+        
+        # Export for video software
+        if st.button("Export Video Analysis Data"):
+            export_data = pd.concat([hard_hits, field_data]).drop_duplicates()
+            csv = export_data.to_csv(index=False)
+            st.download_button(
+                label="Download Video Analysis CSV",
+                data=csv,
+                file_name="video_analysis_highlights.csv",
+                mime="text/csv"
+            )
+
     def run_dashboard(self):
         """Main dashboard execution."""
         data = self.load_data()
@@ -437,9 +670,10 @@ class GTBaseballDashboard:
         # Main content
         self.render_overview_metrics(filtered_data)
         
-        # Analysis tabs
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "Pitching", "Hitting", "Fielding", "Baserunning", "Game Flow"
+        # Analysis tabs - Updated with coaching focus
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+            "Pitching", "Hitting", "Defensive Analytics", "Baserunning", 
+            "Game Flow", "Coaching Reports", "Video Analysis"
         ])
         
         with tab1:
@@ -449,7 +683,7 @@ class GTBaseballDashboard:
             self.render_hitting_analysis(filtered_data)
         
         with tab3:
-            self.render_fielding_analysis(filtered_data)
+            self.render_defensive_coaching_analysis(filtered_data)
         
         with tab4:
             self.render_baserunning_analysis(filtered_data)
@@ -457,20 +691,11 @@ class GTBaseballDashboard:
         with tab5:
             self.render_game_flow(filtered_data)
         
-        # Download report
-        st.header("📄 Generate Report")
-        if st.button("Generate Analysis Report"):
-            analyzer = GTBaseballAnalyzer(filtered_data)
-            report = analyzer.generate_game_report()
-            st.text_area("Game Analysis Report", report, height=300)
-            
-            # Download button
-            st.download_button(
-                label="Download Report",
-                data=report,
-                file_name="gt_baseball_analysis_report.txt",
-                mime="text/plain"
-            )
+        with tab6:
+            self.render_coaching_reports(filtered_data)
+        
+        with tab7:
+            self.render_video_analysis_prep(filtered_data)
 
 # Run the dashboard
 if __name__ == "__main__":
