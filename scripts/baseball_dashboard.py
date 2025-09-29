@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns # type: ignore
 from data_loader import GTBaseballDataLoader
 from baseball_analyzer import GTBaseballAnalyzer
+from report_generator import ReportGenerator
 
 class GTBaseballDashboard:
     """
@@ -520,6 +521,19 @@ class GTBaseballDashboard:
                 file_name=f"coaching_report_{pd.Timestamp.now().strftime('%Y%m%d')}.txt",
                 mime="text/plain"
             )
+
+            # Also offer a PDF weekly report generated from the same filtered data
+            try:
+                rg = ReportGenerator(data)
+                pdf_bytes = rg.export_pdf_bytes()
+                st.download_button(
+                    label="Download Weekly PDF Report",
+                    data=pdf_bytes,
+                    file_name=f"weekly_report_{pd.Timestamp.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf"
+                )
+            except Exception as e:
+                st.error(f"Failed to generate PDF report: {e}")
         
         # Top 5 insights
         st.subheader("Top 5 Game Insights")
@@ -621,7 +635,37 @@ class GTBaseballDashboard:
             if avg_time > 4.5:
                 insights.append(f"Average time to first base: {avg_time:.2f}s - speed training opportunity")
         
-        return insights[:5]  # Return top 5 insights    
+        return insights[:5]  # Return top 5 insights  
+     
+    def render_report_generation(self, data):
+        """Render the report generation button and handle download options."""
+        st.header("📋 Weekly Report Generation")
+        
+        if st.button("Generate Weekly Report"):
+            # Generate the report (CSV + PDF)
+            report_generator = ReportGenerator(data)
+            report_generator.export_csv("weekly_summary.csv")
+            report_generator.export_pdf("weekly_report.pdf")
+            
+            st.success("Reports Generated! Download the reports below.")
+            
+            # Provide download options
+            with open("reports/weekly_summary.csv", "rb") as file:
+                st.download_button(
+                    label="Download CSV Report",
+                    data=file,
+                    file_name="weekly_summary.csv",
+                    mime="text/csv"
+                )
+            
+            with open("reports/weekly_report.pdf", "rb") as file:
+                st.download_button(
+                    label="Download PDF Report",
+                    data=file,
+                    file_name="weekly_report.pdf",
+                    mime="application/pdf"
+                )
+     
 
     def render_video_analysis_prep(self, data):
         """Prepare data for video analysis overlay."""
