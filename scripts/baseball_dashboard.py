@@ -701,6 +701,383 @@ class GTBaseballDashboard:
                 mime="text/csv"
             )
 
+    def render_accountability_metrics(self, data):
+        """Render accountability metrics dashboard."""
+        st.header("📊 Accountability Metrics")
+        
+        from accountability_analytics import AccountabilityAnalytics
+        accountability = AccountabilityAnalytics(data)
+        
+        # Configuration section
+        with st.expander("⚙️ Configure Standards"):
+            st.write("**Baserunning Standards:**")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.number_input("Secondary Lead - 1B (ft)", value=16.0, key="sec_1b")
+            with col2:
+                st.number_input("Secondary Lead - 2B (ft)", value=16.0, key="sec_2b")
+            with col3:
+                st.number_input("Secondary Lead - 3B (ft)", value=14.0, key="sec_3b")
+            
+            st.write("**Defensive Standards:**")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.number_input("Route Efficiency Threshold (%)", value=85.0, key="route_threshold")
+            with col2:
+                st.number_input("Reaction Time Threshold (s)", value=0.8, key="reaction_threshold")
+        
+        # Tabs for different accountability views
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Baserunning", "Defensive Positioning", "Violations Report", "Team Summary"
+        ])
+        
+        with tab1:
+            st.subheader("🏃 Baserunning Accountability")
+            
+            baserunning_analysis = accountability.analyze_baserunning_accountability()
+            
+            if 'error' not in baserunning_analysis:
+                # Team summary
+                if 'team_summary' in baserunning_analysis:
+                    summary = baserunning_analysis['team_summary']
+                    
+                    st.write("**Team Performance:**")
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric(
+                            "Total Opportunities",
+                            summary.get('total_opportunities', 0)
+                        )
+                    with col2:
+                        st.metric(
+                            "Avg Secondary Lead",
+                            f"{summary.get('avg_secondary_lead', 0):.1f} ft"
+                        )
+                    with col3:
+                        st.metric(
+                            "Avg Max Speed",
+                            f"{summary.get('avg_max_speed', 0):.1f} mph"
+                        )
+                    
+                    # Compliance by base
+                    if 'compliance_metrics' in summary:
+                        st.write("**Compliance by Base:**")
+                        
+                        compliance_data = []
+                        for base, metrics in summary['compliance_metrics'].items():
+                            compliance_data.append({
+                                'Base': base.replace('base_', '') + 'B',
+                                'Expected Lead (ft)': metrics['expected_lead'],
+                                'Actual Avg (ft)': round(metrics['avg_lead'], 1),
+                                'Compliant Plays': metrics['compliant'],
+                                'Total Plays': metrics['total'],
+                                'Compliance Rate': f"{metrics['compliance_rate']:.1f}%"
+                            })
+                        
+                        compliance_df = pd.DataFrame(compliance_data)
+                        st.dataframe(compliance_df, use_container_width=True)
+                        
+                        # Visualization
+                        charts = accountability._create_baserunning_charts()
+                        if 'secondary_lead_comparison' in charts:
+                            st.plotly_chart(charts['secondary_lead_comparison'], use_container_width=True)
+                
+                # Individual player analysis
+                if 'players' in baserunning_analysis and baserunning_analysis['players']:
+                    st.write("**Individual Player Analysis:**")
+                    
+                    player = st.selectbox(
+                        "Select Player",
+                        list(baserunning_analysis['players'].keys())
+                    )
+                    
+                    if player:
+                        player_data = baserunning_analysis['players'][player]
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric(
+                                "Total Opportunities",
+                                player_data['total_opportunities']
+                            )
+                            st.metric(
+                                "Compliance Rate",
+                                f"{player_data.get('compliance_rate', 0):.1f}%"
+                            )
+                        
+                        with col2:
+                            if 'max_speed' in player_data and player_data['max_speed']:
+                                st.metric(
+                                    "Avg Max Speed",
+                                    f"{player_data['max_speed'].get('actual_avg', 0):.1f} mph"
+                                )
+                                st.metric(
+                                    "Max Speed Achieved",
+                                    f"{player_data['max_speed'].get('max_achieved', 0):.1f} mph"
+                                )
+                        
+                        # Secondary lead details
+                        if 'secondary_lead' in player_data and player_data['secondary_lead']:
+                            st.write("**Secondary Lead Performance:**")
+                            
+                            lead_data = []
+                            for base, metrics in player_data['secondary_lead'].items():
+                                lead_data.append({
+                                    'Base': base.replace('base_', '') + 'B',
+                                    'Expected (ft)': metrics['expected'],
+                                    'Actual Avg (ft)': round(metrics['actual_avg'], 1),
+                                    'Variance (ft)': round(metrics['variance'], 1),
+                                    'Compliant': metrics['compliance_count'],
+                                    'Total': metrics['opportunities']
+                                })
+                            
+                            lead_df = pd.DataFrame(lead_data)
+                            st.dataframe(lead_df, use_container_width=True)
+        
+        with tab2:
+            st.subheader("🛡️ Defensive Positioning Accountability")
+            
+            defensive_analysis = accountability.analyze_defensive_positioning_accountability()
+            
+            if 'error' not in defensive_analysis:
+                # Team summary
+                if 'team_summary' in defensive_analysis:
+                    summary = defensive_analysis['team_summary']
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric(
+                            "Total Plays",
+                            summary.get('total_opportunities', 0)
+                        )
+                    with col2:
+                        st.metric(
+                            "Avg Route Efficiency",
+                            f"{summary.get('avg_route_efficiency', 0):.1f}%"
+                        )
+                    with col3:
+                        st.metric(
+                            "Avg Reaction Time",
+                            f"{summary.get('avg_reaction_time', 0):.2f}s"
+                        )
+                    
+                    # Compliance metrics
+                    if 'compliance_metrics' in summary:
+                        st.write("**Team Compliance:**")
+                        
+                        for metric_name, metrics in summary['compliance_metrics'].items():
+                            col1, col2 = st.columns([3, 1])
+                            
+                            with col1:
+                                st.write(f"**{metric_name.replace('_', ' ').title()}:**")
+                                st.progress(metrics['compliance_rate'] / 100)
+                            
+                            with col2:
+                                st.metric(
+                                    "Rate",
+                                    f"{metrics['compliance_rate']:.1f}%"
+                                )
+                
+                # Individual fielder analysis
+                if 'players' in defensive_analysis and defensive_analysis['players']:
+                    st.write("**Individual Fielder Analysis:**")
+                    
+                    fielder = st.selectbox(
+                        "Select Fielder",
+                        list(defensive_analysis['players'].keys())
+                    )
+                    
+                    if fielder:
+                        fielder_data = defensive_analysis['players'][fielder]
+                        
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric(
+                                "Total Plays",
+                                fielder_data['total_opportunities']
+                            )
+                        with col2:
+                            st.metric(
+                                "Compliance Rate",
+                                f"{fielder_data.get('compliance_rate', 0):.1f}%"
+                            )
+                        with col3:
+                            if 'route_efficiency' in fielder_data:
+                                violations = fielder_data['route_efficiency'].get('below_threshold_count', 0)
+                                st.metric(
+                                    "Violations",
+                                    violations,
+                                    delta=f"-{violations}" if violations > 0 else None,
+                                    delta_color="inverse"
+                                )
+                        
+                        # Detailed metrics
+                        if 'route_efficiency' in fielder_data:
+                            st.write("**Route Efficiency:**")
+                            re = fielder_data['route_efficiency']
+                            
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.write(f"Expected: {re['expected']:.1f}%")
+                            with col2:
+                                st.write(f"Actual Avg: {re['actual_avg']:.1f}%")
+                            with col3:
+                                best_play = re.get('best_play')
+                                if best_play is not None and not pd.isna(best_play):
+                                    st.write(f"Best: {best_play:.1f}%")
+                                else:
+                                    st.write("Best: N/A")
+
+                        if 'reaction_time' in fielder_data:
+                            st.write("**Reaction Time:**")
+                            rt = fielder_data['reaction_time']
+                            
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.write(f"Expected: {rt['expected']:.2f}s")
+                            with col2:
+                                st.write(f"Actual Avg: {rt['actual_avg']:.2f}s")
+                            with col3:
+                                best_reaction = rt.get('best_reaction')
+                                if best_reaction is not None and not pd.isna(best_reaction):
+                                    st.write(f"Best: {best_reaction:.2f}s")
+                                else:
+                                    st.write("Best: N/A")
+                    
+                    # Visualization
+                    charts = accountability._create_defensive_charts()
+                    if 'route_efficiency_by_player' in charts:
+                        st.plotly_chart(charts['route_efficiency_by_player'], use_container_width=True)
+        
+        with tab3:
+            st.subheader("⚠️ Violations Report")
+            
+            violations_df = accountability.generate_violation_report()
+            
+            if not violations_df.empty:
+                # Summary stats
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Total Violations", len(violations_df))
+                with col2:
+                    high_severity = len(violations_df[violations_df.get('Severity', '') == 'High'])
+                    st.metric("High Severity", high_severity)
+                with col3:
+                    medium_severity = len(violations_df[violations_df.get('Severity', '') == 'Medium'])
+                    st.metric("Medium Severity", medium_severity)
+                
+                # Filters
+                st.write("**Filter Violations:**")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    violation_type = st.multiselect(
+                        "Type",
+                        options=violations_df['Type'].unique() if 'Type' in violations_df else [],
+                        default=violations_df['Type'].unique() if 'Type' in violations_df else []
+                    )
+                
+                with col2:
+                    severity = st.multiselect(
+                        "Severity",
+                        options=violations_df['Severity'].unique() if 'Severity' in violations_df else [],
+                        default=violations_df['Severity'].unique() if 'Severity' in violations_df else []
+                    )
+                
+                # Apply filters
+                filtered_violations = violations_df.copy()
+                if 'Type' in filtered_violations and violation_type:
+                    filtered_violations = filtered_violations[
+                        filtered_violations['Type'].isin(violation_type)
+                    ]
+                if 'Severity' in filtered_violations and severity:
+                    filtered_violations = filtered_violations[
+                        filtered_violations['Severity'].isin(severity)
+                    ]
+                
+                # Display table
+                st.dataframe(filtered_violations, use_container_width=True)
+                
+                # Download button
+                csv = filtered_violations.to_csv(index=False)
+                st.download_button(
+                    label="Download Violations Report",
+                    data=csv,
+                    file_name=f"accountability_violations_{pd.Timestamp.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.success("✅ No violations found! Team is meeting all standards.")
+        
+        with tab4:
+            st.subheader("📈 Team Summary")
+            
+            # Overall compliance scorecard
+            st.write("**Overall Team Accountability Scorecard:**")
+            
+            baserunning_analysis = accountability.analyze_baserunning_accountability()
+            defensive_analysis = accountability.analyze_defensive_positioning_accountability()
+            
+            # Calculate overall scores
+            baserunning_score = 0
+            defensive_score = 0
+            
+            if 'team_summary' in baserunning_analysis:
+                if 'compliance_metrics' in baserunning_analysis['team_summary']:
+                    rates = [
+                        m['compliance_rate']
+                        for m in baserunning_analysis['team_summary']['compliance_metrics'].values()
+                    ]
+                    baserunning_score = sum(rates) / len(rates) if rates else 0
+            
+            if 'team_summary' in defensive_analysis:
+                if 'compliance_metrics' in defensive_analysis['team_summary']:
+                    rates = [
+                        m['compliance_rate']
+                        for m in defensive_analysis['team_summary']['compliance_metrics'].values()
+                    ]
+                    defensive_score = sum(rates) / len(rates) if rates else 0
+            
+            overall_score = (baserunning_score + defensive_score) / 2
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric(
+                    "Baserunning Compliance",
+                    f"{baserunning_score:.1f}%",
+                    delta=f"{baserunning_score - 85:.1f}%" if baserunning_score > 0 else None
+                )
+            
+            with col2:
+                st.metric(
+                    "Defensive Compliance",
+                    f"{defensive_score:.1f}%",
+                    delta=f"{defensive_score - 85:.1f}%" if defensive_score > 0 else None
+                )
+            
+            with col3:
+                st.metric(
+                    "Overall Score",
+                    f"{overall_score:.1f}%",
+                    delta=f"{overall_score - 85:.1f}%" if overall_score > 0 else None
+                )
+            
+            # Progress bars
+            st.write("**Detailed Breakdown:**")
+            
+            st.write("Baserunning:")
+            st.progress(baserunning_score / 100)
+            
+            st.write("Defensive Positioning:")
+            st.progress(defensive_score / 100)
+
     def run_dashboard(self):
         """Main dashboard execution."""
         data = self.load_data()
@@ -714,10 +1091,10 @@ class GTBaseballDashboard:
         # Main content
         self.render_overview_metrics(filtered_data)
         
-        # Analysis tabs - Updated with coaching focus
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        # Analysis tabs - Updated with Accountability
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
             "Pitching", "Hitting", "Defensive Analytics", "Baserunning", 
-            "Game Flow", "Coaching Reports", "Video Analysis"
+            "Accountability", "Game Flow", "Coaching Reports", "Video Analysis"
         ])
         
         with tab1:
@@ -733,12 +1110,15 @@ class GTBaseballDashboard:
             self.render_baserunning_analysis(filtered_data)
         
         with tab5:
-            self.render_game_flow(filtered_data)
+            self.render_accountability_metrics(filtered_data)
         
         with tab6:
-            self.render_coaching_reports(filtered_data)
+            self.render_game_flow(filtered_data)
         
         with tab7:
+            self.render_coaching_reports(filtered_data)
+        
+        with tab8:
             self.render_video_analysis_prep(filtered_data)
 
 # Run the dashboard
