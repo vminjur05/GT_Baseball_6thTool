@@ -94,6 +94,10 @@ class GTBaseballDashboard:
                             tmp.close()
                         else:
                             df = pd.read_csv(file)
+
+                        # Normalize this file's columns to canonical names right away
+                        df = loader._normalize_columns(df)
+
                         df['GameID'] = f"Game_{i+1}"
                         df['FileName'] = file.name
                         all_data.append(df)
@@ -102,10 +106,49 @@ class GTBaseballDashboard:
                 
                 if all_data:
                     combined_data = pd.concat(all_data, ignore_index=True)
-                    # Apply the same cleaning as the loader
+
+                    # (combined_data already contains canonical columns from per-file normalization)
+                    # Apply the same cleaning/derived steps
                     loader.data = combined_data
                     st.session_state.game_data = loader._clean_data(combined_data)
                     st.session_state.game_data = loader._add_derived_columns(st.session_state.game_data)
+
+                    # Run additional inference to fill BallInPlay / EventPlayerName where possible
+                    try:
+                        st.session_state.game_data = loader._infer_bip_and_fielding(st.session_state.game_data)
+                    except Exception:
+                        # don't fail UI on inference issues
+                        pass
+
+                    # Diagnostics: show counts and give helpful collapsible info if no BIP/fielding rows
+                    bip_count = 0
+                    try:
+                        bip_count = int(st.session_state.game_data["BallInPlay"].astype(bool).sum())
+                    except Exception:
+                        bip_count = 0
+                    fielding_rows = 0
+                    try:
+                        fielding_rows = int(len(st.session_state.game_data[(st.session_state.game_data.get("IsEventPlayer")==True) & (st.session_state.game_data.get("EventPlayerName").notna())]))
+                    except Exception:
+                        fielding_rows = 0
+
+                    if bip_count == 0:
+                        st.warning("No balls in play detected after automatic inference. Hitting charts will be empty.")
+                        with st.expander("Why no BIP? See columns & sample rows"):
+                            st.write("Available columns (first 120):")
+                            st.write(st.session_state.game_data.columns.tolist()[:120])
+                            st.write("Sample rows:")
+                            st.dataframe(st.session_state.game_data.head(5), use_container_width=True)
+
+                    if fielding_rows == 0:
+                        st.info("No fielding/event-player rows detected. Defensive analytics will be limited.")
+                        with st.expander("Why no fielding data? See candidate columns"):
+                            st.write("Look for these columns in your file: 'primary_fielder', 'player_involved', 'lead_baserunner', 'route_efficiency', 'reaction_time', 'Probability'")
+                            st.write("Available columns (first 120):")
+                            st.write(st.session_state.game_data.columns.tolist()[:120])
+                            st.write("Sample rows:")
+                            st.dataframe(st.session_state.game_data.head(5), use_container_width=True)
+
                     st.success(f"Loaded {len(all_data)} games with {len(st.session_state.game_data)} total pitches")
                     return st.session_state.game_data
             else:
@@ -440,7 +483,17 @@ class GTBaseballDashboard:
         """Render baserunning analysis section."""
         st.header("🏃 Baserunning Analysis")
         
-        base_data = data[data['BaserunnerMaxSpeed'].notna()]
+        # Check if baserunning columns exist using the helper method
+        speed_col = self._find_col(data, [
+            'BaserunnerMaxSpeed', 'baserunner_max_speed', 'max_speed', 
+            'MaxSpeed', 'runner_speed', 'speed'
+        ])
+        
+        if speed_col is None:
+            st.warning("No baserunning speed data available for analysis.")
+            return
+        
+        base_data = data[data[speed_col].notna()]
         
         if len(base_data) == 0:
             st.warning("No baserunning data available for analysis.")
@@ -452,24 +505,38 @@ class GTBaseballDashboard:
             # Max speed distribution
             fig_speed = px.histogram(
                 base_data,
-                x='BaserunnerMaxSpeed',
+                x=speed_col,
                 title="Baserunner Max Speed Distribution",
-                labels={'BaserunnerMaxSpeed': 'Max Speed (mph)'}
+                labels={speed_col: 'Max Speed (mph)'}
             )
             st.plotly_chart(fig_speed, use_container_width=True)
         
         with col2:
-            # Speed by base position
-            if all(col in base_data.columns for col in ['BaserunnerInitial', 'BaserunnerFinal']):
-                base_data_clean = base_data.dropna(subset=['BaserunnerInitial', 'BaserunnerFinal'])
+            # Speed by base position - check if these columns exist
+            initial_col = self._find_col(base_data, [
+                'BaserunnerInitial', 'baserunner_initial', 'base_start', 
+                'initial_base', 'from_base'
+            ])
+            final_col = self._find_col(base_data, [
+                'BaserunnerFinal', 'baserunner_final', 'base_end', 
+                'final_base', 'to_base'
+            ])
+            
+            if initial_col and final_col:
+                base_data_clean = base_data.dropna(subset=[initial_col, final_col])
                 if len(base_data_clean) > 0:
                     fig_bases = px.box(
                         base_data_clean,
-                        x='BaserunnerInitial',
-                        y='BaserunnerMaxSpeed',
-                        title="Speed by Starting Base"
+                        x=initial_col,
+                        y=speed_col,
+                        title="Speed by Starting Base",
+                        labels={initial_col: 'Starting Base', speed_col: 'Max Speed (mph)'}
                     )
                     st.plotly_chart(fig_bases, use_container_width=True)
+                else:
+                    st.info("Insufficient data for base-by-base speed analysis.")
+            else:
+                st.info("Base position data not available for detailed analysis.")
     
     def render_game_flow(self, data):
         """Render game flow analysis."""
