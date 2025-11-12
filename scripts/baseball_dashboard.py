@@ -18,6 +18,28 @@ class GTBaseballDashboard:
     def __init__(self):
         self.setup_page_config()
         
+    # --- Helpers to tolerate different column names / missing columns ---
+    def _find_col(self, df, candidates):
+        """Return first existing column name from candidates, or None."""
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
+
+    def _numeric_series(self, df, candidates):
+        """Return numeric Series for the first matching candidate, coerced to numeric; else NaN series."""
+        col = self._find_col(df, candidates)
+        if col is None:
+            return pd.Series([pd.NA] * len(df), index=df.index)
+        return pd.to_numeric(df[col], errors="coerce")
+
+    def _name_series(self, df, candidates):
+        """Return object Series for the first matching candidate, else Series of empty strings."""
+        col = self._find_col(df, candidates)
+        if col is None:
+            return pd.Series([""] * len(df), index=df.index)
+        return df[col].astype(str).fillna("")
+
     def setup_page_config(self):
         """Configure Streamlit page settings."""
         st.set_page_config(
@@ -53,16 +75,25 @@ class GTBaseballDashboard:
             
             # File uploader
             uploaded_files = st.file_uploader(
-                "Upload GT Baseball CSV files", 
+                "Upload GT Baseball CSV/Parquet files",
                 accept_multiple_files=True,
-                type=['csv']
+                type=['csv', 'parquet']
             )
             
             if uploaded_files:
                 all_data = []
                 for i, file in enumerate(uploaded_files):
                     try:
-                        df = pd.read_csv(file)
+                        # handle parquet or csv uploads
+                        if file.name.lower().endswith(".parquet"):
+                            import tempfile
+                            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
+                            tmp.write(file.getvalue())
+                            tmp.flush()
+                            df = pd.read_parquet(tmp.name)
+                            tmp.close()
+                        else:
+                            df = pd.read_csv(file)
                         df['GameID'] = f"Game_{i+1}"
                         df['FileName'] = file.name
                         all_data.append(df)
@@ -98,29 +129,36 @@ class GTBaseballDashboard:
         # Player filters
         st.sidebar.subheader("Player Filters")
         
-        pitchers = ['All Pitchers'] + list(data['PitcherName'].unique())
-        selected_pitcher = st.sidebar.selectbox("Select Pitcher:", pitchers)
-        
-        batters = ['All Batters'] + list(data['BatterName'].unique())
-        selected_batter = st.sidebar.selectbox("Select Batter:", batters)
-        
-        # Apply filters
-        filtered_data = data.copy()
-        if selected_pitcher != 'All Pitchers':
-            filtered_data = filtered_data[filtered_data['PitcherName'] == selected_pitcher]
-        if selected_batter != 'All Batters':
-            filtered_data = filtered_data[filtered_data['BatterName'] == selected_batter]
-        
-        # Inning filter
-        innings = sorted(data['Inning'].unique())
-        selected_innings = st.sidebar.multiselect(
-            "Select Innings:", 
-            innings, 
-            default=innings
-        )
-        filtered_data = filtered_data[filtered_data['Inning'].isin(selected_innings)]
-        
-        return filtered_data, selected_pitcher, selected_batter
+        # find best available column for pitcher / batter (tolerate many exports)
+        pitcher_col = None
+        for c in ['PitcherName', 'pitcher', 'pitcher_name', 'pitcher_id', 'player_name', 'name']:
+            if c in data.columns:
+                pitcher_col = c
+                break
+
+        batter_col = None
+        for c in ['BatterName', 'batter', 'batter_name', 'batter_id', 'player_name', 'name']:
+            if c in data.columns:
+                batter_col = c
+                break
+
+        pitchers = ['All Pitchers']
+        if pitcher_col:
+            pitchers += list(data[pitcher_col].dropna().unique())
+        batters = ['All Batters']
+        if batter_col:
+            batters += list(data[batter_col].dropna().unique())
+
+        selected_pitcher = st.selectbox("Pitcher", pitchers)
+        selected_batter = st.selectbox("Batter", batters)
+
+        # apply filters using the detected columns (if present)
+        filtered = data.copy()
+        if selected_pitcher != 'All Pitchers' and pitcher_col:
+            filtered = filtered[filtered[pitcher_col] == selected_pitcher]
+        if selected_batter != 'All Batters' and batter_col:
+            filtered = filtered[filtered[batter_col] == selected_batter]
+        return filtered, selected_pitcher, selected_batter
     
     def render_overview_metrics(self, data):
         """Render key performance metrics."""
@@ -134,45 +172,81 @@ class GTBaseballDashboard:
             st.metric("Total Pitches", f"{total_pitches:,}")
         
         with col2:
-            avg_velocity = data['PitchVelo'].mean()
-            st.metric("Avg Pitch Velocity", f"{avg_velocity:.1f} mph")
+            pv = self._numeric_series(data, ['PitchVelo', 'pitch_velo', 'pitch_velocity', 'throw_velo', 'velo'])
+            avg_velocity = pv.mean()
+            if pd.isna(avg_velocity):
+                st.metric("Avg Pitch Velocity", "N/A")
+            else:
+                st.metric("Avg Pitch Velocity", f"{avg_velocity:.1f} mph")
         
         with col3:
-            balls_in_play = data['BallInPlay'].sum()
-            st.metric("Balls in Play", f"{balls_in_play:,}")
+            bip = self._numeric_series(data, ['BallInPlay', 'ball_in_play', 'BallInPlay'])
+            # bip may be bool-like; coerce to boolean then sum
+            try:
+                bip_count = int(bip.astype(bool).sum())
+            except Exception:
+                bip_count = int(bip.dropna().sum()) if bip.dropna().size > 0 else 0
+            st.metric("Balls in Play", f"{bip_count:,}")
         
         with col4:
-            if 'ExitVelo' in data.columns:
-                avg_exit_velo = data[data['BallInPlay'] == True]['ExitVelo'].mean()
-                st.metric("Avg Exit Velocity", f"{avg_exit_velo:.1f} mph")
+            ev = self._numeric_series(data, ['ExitVelo', 'exit_velo', 'ExitVelocity', 'Exit_Velo'])
+            bip_mask = self._numeric_series(data, ['BallInPlay', 'ball_in_play', 'BallInPlay']).astype(bool)
+            if ev.dropna().size > 0 and bip_mask.any():
+                avg_exit_velo = ev[bip_mask].mean()
+                if pd.isna(avg_exit_velo):
+                    st.metric("Avg Exit Velocity", "N/A")
+                else:
+                    st.metric("Avg Exit Velocity", f"{avg_exit_velo:.1f} mph")
             else:
                 st.metric("Avg Exit Velocity", "N/A")
         
         with col5:
-            unique_players = len(set(data['PitcherName'].unique()) | set(data['BatterName'].unique()))
+            pser = self._name_series(data, ['PitcherName', 'pitcher', 'pitcher_name', 'player_name', 'name'])
+            bser = self._name_series(data, ['BatterName', 'batter', 'batter_name', 'player_name', 'name'])
+            unique_players = len(set(pser.dropna().unique()) | set(bser.dropna().unique()))
             st.metric("Total Players", unique_players)
     
     def render_pitching_analysis(self, data):
         """Render pitching analysis section."""
         st.header("🥎 Pitching Analysis")
         
+        # prepare a numeric pitch velocity series from best available column names
+        pv = self._numeric_series(data, ['PitchVelo', 'pitch_velo', 'pitch_velocity', 'throw_velo', 'velo'])
+        temp = data.copy()
+        temp["_PitchVelo"] = pv
+        
+        # If no velocity data, show friendly message and skip velocity charts
+        if temp["_PitchVelo"].dropna().empty:
+            st.warning("No pitch velocity data available for pitching analysis.")
+            # still show pitch outcome pie if present
+            if 'PitchOutcome' in data.columns:
+                outcome_counts = data['PitchOutcome'].value_counts()
+                fig_outcomes = px.pie(
+                    values=outcome_counts.values,
+                    names=outcome_counts.index,
+                    title="Pitch Outcome Distribution"
+                )
+                st.plotly_chart(fig_outcomes, use_container_width=True)
+            return
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            # Velocity distribution
+            # Velocity distribution (use normalized temp column)
             fig_vel = px.histogram(
-                data, 
-                x='PitchVelo', 
+                temp.dropna(subset=['_PitchVelo']),
+                x='_PitchVelo',
                 nbins=20,
                 title="Pitch Velocity Distribution",
-                labels={'PitchVelo': 'Velocity (mph)', 'count': 'Frequency'}
+                labels={'_PitchVelo': 'Velocity (mph)', 'count': 'Frequency'}
             )
-            fig_vel.add_vline(x=data['PitchVelo'].mean(), line_dash="dash", 
-                             annotation_text=f"Mean: {data['PitchVelo'].mean():.1f}")
+            mean_vel = temp["_PitchVelo"].mean()
+            fig_vel.add_vline(x=mean_vel, line_dash="dash", 
+                              annotation_text=f"Mean: {mean_vel:.1f}")
             st.plotly_chart(fig_vel, use_container_width=True)
         
         with col2:
-            # Pitch outcomes
+            # Pitch outcomes (if present)
             if 'PitchOutcome' in data.columns:
                 outcome_counts = data['PitchOutcome'].value_counts()
                 fig_outcomes = px.pie(
@@ -182,26 +256,37 @@ class GTBaseballDashboard:
                 )
                 st.plotly_chart(fig_outcomes, use_container_width=True)
         
-        # Velocity by inning
-        if data['Inning'].nunique() > 1:
+        # Velocity by inning (use temp _PitchVelo and guard missing Inning)
+        if 'Inning' in temp.columns and temp['Inning'].nunique() > 1:
             st.subheader("Velocity by Inning")
-            fig_inning = px.box(
-                data,
-                x='Inning',
-                y='PitchVelo',
-                title="Pitch Velocity by Inning"
-            )
-            st.plotly_chart(fig_inning, use_container_width=True)
+            df_box = temp.dropna(subset=['_PitchVelo', 'Inning'])
+            if len(df_box) > 0:
+                fig_inning = px.box(
+                    df_box,
+                    x='Inning',
+                    y='_PitchVelo',
+                    title="Pitch Velocity by Inning",
+                    labels={'_PitchVelo': 'Velocity (mph)'}
+                )
+                st.plotly_chart(fig_inning, use_container_width=True)
         
-        # Pitcher comparison
+        # Pitcher comparison: build stats using detected pitcher column and normalized velocity
         st.subheader("Pitcher Comparison")
-        pitcher_stats = data.groupby('PitcherName').agg({
-            'PitchVelo': ['mean', 'count'],
-            'PitchOutcome': lambda x: (x == 'Strike').sum() / len(x) * 100
-        }).round(2)
-        
-        pitcher_stats.columns = ['Avg Velocity', 'Total Pitches', 'Strike Rate %']
-        st.dataframe(pitcher_stats, use_container_width=True)
+        pitcher_col = self._find_col(temp, ['PitcherName', 'pitcher', 'pitcher_name', 'player_name', 'name'])
+        if pitcher_col:
+            # average velocity and pitch counts
+            pv_by_pitcher = temp.dropna(subset=[pitcher_col]).groupby(pitcher_col)["_PitchVelo"].agg(['mean', 'count'])
+            pv_by_pitcher = pv_by_pitcher.rename(columns={'mean': 'Avg Velocity', 'count': 'Total Pitches'})
+            # strike rate if PitchOutcome exists
+            if 'PitchOutcome' in temp.columns:
+                strike_rate = temp.groupby(pitcher_col)['PitchOutcome'].apply(lambda s: (s.isin(['Strike', 'Foul']).sum() / max(1, len(s))) * 100)
+                pv_by_pitcher['Strike Rate %'] = strike_rate
+            else:
+                pv_by_pitcher['Strike Rate %'] = pd.NA
+            pitcher_stats = pv_by_pitcher.round(2)
+            st.dataframe(pitcher_stats, use_container_width=True)
+        else:
+            st.info("No pitcher identifier column found for pitcher comparison.")
     
     def render_hitting_analysis(self, data):
         """Render hitting analysis section."""
@@ -424,22 +509,78 @@ class GTBaseballDashboard:
             fig_velocity_trend.update_xaxes(title="Inning")
             fig_velocity_trend.update_yaxes(title="Average Velocity (mph)")
             st.plotly_chart(fig_velocity_trend, use_container_width=True)
-    
-    # Add this method to GTBaseballDashboard class
-
+            
     def render_defensive_coaching_analysis(self, data):
         """Render defensive coaching insights."""
         st.header("🛡️ Defensive Coaching Analytics")
         
+        # Support uploading tracking/expected-position files (CSV or Parquet)
+        tracking_file = st.file_uploader(
+            "Upload tracking file (CSV or Parquet)", type=["csv", "parquet"]
+        )
+        expected_file = st.file_uploader(
+            "Optional expected positions (CSV or Parquet)", type=["csv", "parquet"]
+        )
+        
+        tracking_df = None
+        expected_df = None
+        if tracking_file is not None:
+            if tracking_file.name.lower().endswith(".parquet"):
+                import tempfile
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
+                tmp.write(tracking_file.getvalue())
+                tmp.flush()
+                tracking_df = pd.read_parquet(tmp.name)
+                tmp.close()
+            else:
+                tracking_df = pd.read_csv(tracking_file)
+        
+        if expected_file is not None:
+            if expected_file.name.lower().endswith(".parquet"):
+                import tempfile
+                tmp2 = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
+                tmp2.write(expected_file.getvalue())
+                tmp2.flush()
+                expected_df = pd.read_parquet(tmp2.name)
+                tmp2.close()
+            else:
+                expected_df = pd.read_csv(expected_file)
+        
         from defensive_analytics import DefensiveAnalytics
-        defensive_analyzer = DefensiveAnalytics(data)
-        
-        # Fielder positioning analysis
-        st.subheader("Fielder Positioning Effectiveness")
-        positioning = defensive_analyzer.analyze_fielder_positioning()
-        
-        if 'error' not in positioning:
-            # Create positioning dataframe for display
+        # DefensiveAnalytics may not accept tracking kwargs in __init__; instantiate with data only and
+        # try to pass tracking/expected into analysis methods where supported.
+        try:
+            defensive_analyzer = DefensiveAnalytics(data)
+        except TypeError:
+            # fallback: try no-arg constructor then attempt to load data via a known loader method
+            defensive_analyzer = DefensiveAnalytics()
+            if hasattr(defensive_analyzer, 'load_data'):
+                try:
+                    defensive_analyzer.load_data(data)
+                except Exception:
+                    pass
+
+        def _safe_call(method_name, *args, **kwargs):
+            method = getattr(defensive_analyzer, method_name)
+            try:
+                return method(*args, **kwargs)
+            except TypeError:
+                # try without kwargs
+                try:
+                    return method(*args)
+                except Exception:
+                    try:
+                        return method()
+                    except Exception:
+                        return {'error': f'failed to call {method_name}'}
+
+        # call analyze_fielder_positioning trying to pass tracking/expected if available
+        positioning = _safe_call('analyze_fielder_positioning', tracking_df, expected_df)
+         
+        if isinstance(positioning, dict) and 'error' in positioning:
+            st.error("Positioning analysis failed: " + str(positioning.get('error')))
+        else:
+             # Create positioning dataframe for display
             pos_df = pd.DataFrame(positioning).T
             st.dataframe(pos_df, use_container_width=True)
             
@@ -552,8 +693,9 @@ class GTBaseballDashboard:
         
         # Pitching insights
         summary.append("🥎 PITCHING INSIGHTS:")
-        avg_velo = data['PitchVelo'].mean()
-        summary.append(f"• Team average velocity: {avg_velo:.1f} mph")
+        pv = self._numeric_series(data, ['PitchVelo', 'pitch_velo', 'pitch_velocity', 'throw_velo', 'velo'])
+        avg_velo = pv.mean()
+        summary.append(f"• Team average velocity: {avg_velo:.1f} mph" if not pd.isna(avg_velo) else "• Team average velocity: N/A")
         
         # Strike rate analysis
         strikes = data['PitchOutcome'].isin(['Strike', 'Foul']).sum()
@@ -561,13 +703,23 @@ class GTBaseballDashboard:
         summary.append(f"• Strike rate: {strike_rate:.1f}% {'✅' if strike_rate > 65 else '⚠️'}")
         
         # Individual pitcher focus
-        pitcher_stats = data.groupby('PitcherName').agg({
-            'PitchVelo': 'mean',
-            'PitchOutcome': lambda x: (x.isin(['Strike', 'Foul']).sum() / len(x) * 100)
-        }).round(1)
-        
-        lowest_strike_rate = pitcher_stats.loc[pitcher_stats['PitchOutcome'].idxmin()]
-        summary.append(f"• Focus area: {lowest_strike_rate.name} - {lowest_strike_rate['PitchOutcome']:.1f}% strike rate")
+        # safe pitcher stats using available name/velocity columns
+        pitcher_col = self._find_col(data, ['PitcherName', 'pitcher', 'pitcher_name', 'player_name', 'name'])
+        if pitcher_col:
+            pitcher_stats = data.groupby(pitcher_col).apply(
+                lambda g: pd.Series({
+                    'PitchVelo_mean': self._numeric_series(g, ['PitchVelo', 'pitch_velo', 'pitch_velocity', 'throw_velo', 'velo']).mean(),
+                    'StrikeRate': (g['PitchOutcome'].isin(['Strike', 'Foul']).sum() / max(1, len(g))) * 100 if 'PitchOutcome' in g.columns else pd.NA
+                })
+            ).round(1)
+        else:
+            pitcher_stats = pd.DataFrame()
+
+        if not pitcher_stats.empty:
+            # handle different column names from aggregation
+            strike_col = [c for c in pitcher_stats.columns if 'Strike' in c or 'PitchOutcome' in c][0]
+            lowest = pitcher_stats.loc[pitcher_stats[strike_col].idxmin()]
+            summary.append(f"• Focus area: {lowest.name} - {lowest[strike_col]:.1f}% strike rate")
         summary.append("")
         
         # Hitting insights
@@ -592,8 +744,10 @@ class GTBaseballDashboard:
         field_data = data[(data['IsEventPlayer'] == True) & (data['EventPlayerName'].notna())]
         
         if len(field_data) > 0:
-            avg_route_eff = field_data['FielderRouteEfficiency'].mean()
-            summary.append(f"• Team route efficiency: {avg_route_eff:.1f}%")
+            # tolerate multiple fielder route column names
+            fre = self._numeric_series(field_data, ['FielderRouteEfficiency', 'route_efficiency', 'FielderRoute'])
+            avg_route_eff = fre.mean()
+            summary.append(f"• Team route efficiency: {avg_route_eff:.1f}%" if not pd.isna(avg_route_eff) else "• Team route efficiency: N/A")
             
             slow_reactions = field_data[field_data['FielderReaction'] > field_data['FielderReaction'].quantile(0.75)]
             if len(slow_reactions) > 0:
@@ -605,9 +759,13 @@ class GTBaseballDashboard:
         """Generate top 5 actionable insights."""
         insights = []
         
-        # Pitching insights
-        if data['PitchVelo'].std() > 5:
-            insights.append("High velocity variance detected - work on consistent mechanics")
+        # Pitching insights (use available velocity column)
+        pv = self._numeric_series(data, ['PitchVelo', 'pitch_velo', 'pitch_velocity', 'throw_velo', 'velo'])
+        try:
+            if pv.std() > 5:
+                insights.append("High velocity variance detected - work on consistent mechanics")
+        except Exception:
+            pass
         
         # Strike rate insight
         strikes = data['PitchOutcome'].isin(['Strike', 'Foul']).sum()
