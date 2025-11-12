@@ -37,19 +37,28 @@ class DefensiveAnalytics:
             return None
 
         # Common variants we expect from various exports
-        event_name_col = _find(['EventPlayerName', 'eventplayername', 'event_player_name', 'EventPlayer', 'player_name', 'name'])
-        is_event_col = _find(['IsEventPlayer', 'is_event_player', 'IsEvent', 'is_event', 'event_player_flag', 'is_eventplayer'])
-        route_col = _find(['FielderRouteEfficiency', 'route_efficiency', 'FielderRoute', 'routeEff'])
-        reaction_col = _find(['FielderReaction', 'reaction_time', 'fielder_reaction', 'reaction'])
-        maxspeed_col = _find(['FielderMaxSpeed', 'fielder_max_speed', 'FielderMax', 'max_speed_fielder', 'maxspeed', 'max_speed'])
-        prob_col = _find(['FielderProbability', 'FielderProb', 'Probability', 'fielder_probability', 'catch_probability'])
-
+        event_name_col = _find([
+            'EventPlayerName', 'eventplayername', 'event_player_name', 'EventPlayer',
+            'player_involved', 'player_name', 'name', 'primary_fielder'
+        ])
+        is_event_col = _find([
+            'IsEventPlayer', 'is_event_player', 'IsEvent', 'is_event', 'event_player_flag',
+            'is_eventplayer', 'primary_fielder', 'primary_fielder'.lower()
+        ])
+        route_col = _find(['FielderRouteEfficiency', 'route_efficiency', 'FielderRoute', 'routeEff', 'route_eff'])
+        reaction_col = _find(['FielderReaction', 'reaction_time', 'fielder_reaction', 'reaction', 'time_top_speed_fielder'])
+        maxspeed_col = _find(['FielderMaxSpeed', 'fielder_max_speed', 'FielderMax', 'max_speed_fielder', 'maxspeed', 'max_speed', 'max_speed_runner', 'max_speed_fielder'])
+        prob_col = _find(['FielderProbability', 'FielderProb', 'Probability', 'fielder_probability', 'catch_probability', 'Probability'])
+        # additional raw fields
+        lead_baserunner_col = _find(['lead_baserunner'])
+        time_top_speed_col = _find(['time_top_speed_fielder', 'time_top_speed_runner'])
+ 
         # Create canonical columns so other code can rely on these names
         if event_name_col:
             df['EventPlayerName'] = df[event_name_col]
         else:
             df['EventPlayerName'] = pd.NA
-
+ 
         if is_event_col:
             try:
                 df['IsEventPlayer'] = df[is_event_col].astype(bool)
@@ -58,7 +67,7 @@ class DefensiveAnalytics:
         else:
             # infer IsEventPlayer from presence of an event player name
             df['IsEventPlayer'] = df['EventPlayerName'].notna() & (df['EventPlayerName'].astype(str) != '')
-
+ 
         # Standardize route/reaction column existences for downstream usage
         if route_col and 'FielderRouteEfficiency' not in df.columns:
             df['FielderRouteEfficiency'] = df[route_col]
@@ -67,16 +76,27 @@ class DefensiveAnalytics:
         # Map max speed and probability if present
         if maxspeed_col and 'FielderMaxSpeed' not in df.columns:
             df['FielderMaxSpeed'] = pd.to_numeric(df[maxspeed_col], errors='coerce')
+        else:
+            # if parquet contains runner max speed column name, map that too
+            if 'max_speed_runner' in df.columns and 'FielderMaxSpeed' not in df.columns:
+                df['FielderMaxSpeed'] = pd.to_numeric(df['max_speed_runner'], errors='coerce')
+ 
         if prob_col and 'FielderProbability' not in df.columns:
             df['FielderProbability'] = pd.to_numeric(df[prob_col], errors='coerce')
-
+ 
+        # optional mapping for lead baserunner/time_top_speed if present
+        if lead_baserunner_col and 'lead_baserunner' not in df.columns:
+            df['lead_baserunner'] = df[lead_baserunner_col]
+        if time_top_speed_col and 'time_top_speed_fielder' not in df.columns:
+            df['time_top_speed_fielder'] = df[time_top_speed_col]
+ 
         # Keep the normalized DataFrame and a pre-filtered fielding DataFrame
         self.data = df
         try:
             self.fielding_data = df[(df['IsEventPlayer'] == True) & df['EventPlayerName'].notna()]
         except Exception:
             self.fielding_data = pd.DataFrame()
-
+ 
         # Other initialization can follow (avoid assuming any other specific column names)
         # ...existing initialization code (if any)...
     
@@ -114,18 +134,20 @@ class DefensiveAnalytics:
         }
         
         if 'FielderProbability' in self.fielding_data.columns:
-            high_prob = self.fielding_data[
-                self.fielding_data['FielderProbability'] > 70
-            ]
+            high_prob = self.fielding_data[self.fielding_data['FielderProbability'] > 70]
             low_efficiency = self.fielding_data[
-                (self.fielding_data['FielderProbability'] > 50) & 
-                (self.fielding_data['FielderRouteEfficiency'] < 80)
+                (self.fielding_data['FielderProbability'] > 50) &
+                (self.fielding_data.get('FielderRouteEfficiency', pd.Series(dtype=float)) < 80)
             ]
-            
+
+            total = len(self.fielding_data)
+            # safe ratio: avoid division by zero
+            optimal_rate = (len(high_prob) / total * 100) if total > 0 else 0.0
+
             shift_analysis.update({
-                'high_probability_catches': len(high_prob),
-                'missed_opportunities': len(low_efficiency),
-                'optimal_positioning_rate': len(high_prob) / len(self.fielding_data) * 100
+                'high_probability_catches': int(len(high_prob)),
+                'missed_opportunities': int(len(low_efficiency)),
+                'optimal_positioning_rate': float(optimal_rate)
             })
         
         return shift_analysis

@@ -83,6 +83,13 @@ class GTBaseballDataLoader:
         df = self._clean_data(df)
         df = self._add_derived_columns(df)
 
+        # Try to infer BallInPlay and basic fielding columns from tracking-like exports
+        try:
+            df = self._infer_bip_and_fielding(df)
+        except Exception:
+            # keep defensive: don't fail load if inference has issues
+            logger.debug("BIP/fielding inference failed for %s", filepath)
+
         logger.info(
             "Processed data: %d total pitches, %d at-bats",
             len(df),
@@ -90,6 +97,72 @@ class GTBaseballDataLoader:
         )
 
         return df
+    
+    def _infer_bip_and_fielding(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Aggressively infer BallInPlay and basic fielding columns when canonical names are missing.
+        - Mark BallInPlay True when ExitVelo/LaunchAng/ActualDistance/hit_velo present or Result text indicates 'in play'
+        - Map common parquet field names like 'primary_fielder' -> EventPlayerName and infer IsEventPlayer
+        Works only when canonical column is missing or entirely null for a row (non-destructive).
+        """
+        df_inf = df.copy()
+
+        # Ensure canonical columns exist
+        if "BallInPlay" not in df_inf.columns:
+            df_inf["BallInPlay"] = pd.NA
+        if "EventPlayerName" not in df_inf.columns:
+            df_inf["EventPlayerName"] = pd.NA
+        if "IsEventPlayer" not in df_inf.columns:
+            df_inf["IsEventPlayer"] = pd.NA
+
+        # Heuristics: if exit velo / launch angle / actual distance exist -> likely ball in play
+        has_hit_metrics = (
+            df_inf.get("ExitVelo").notna().fillna(False) |
+            df_inf.get("LaunchAng").notna().fillna(False) |
+            df_inf.get("ActualDistance").notna().fillna(False) |
+            df_inf.get("HitVelo", pd.Series([pd.NA]*len(df_inf))).notna().fillna(False)
+        )
+        # Also treat explicit text markers in Result
+        result_text = df_inf.get("Result")
+        res_bip = pd.Series([False]*len(df_inf), index=df_inf.index)
+        if result_text is not None:
+            try:
+                res_bip = result_text.astype(str).str.lower().str.contains("in play|inplay|bip", na=False)
+            except Exception:
+                res_bip = res_bip
+
+        inferred_bip = has_hit_metrics | res_bip
+        # Only set BallInPlay where the canonical value is missing/NA/False
+        try:
+            current_bip = df_inf["BallInPlay"].astype('boolean')
+            mask_to_set = (~current_bip.fillna(False)) & inferred_bip
+        except Exception:
+            mask_to_set = inferred_bip
+        if mask_to_set.any():
+            df_inf.loc[mask_to_set, "BallInPlay"] = True
+
+        # Map primary_fielder / player_involved /name -> EventPlayerName when available
+        for cand in ["primary_fielder", "player_involved", "player_id", "name"]:
+            if cand in df_inf.columns and df_inf[cand].notna().any():
+                # only fill where EventPlayerName is empty
+                mask = df_inf["EventPlayerName"].isna() | (df_inf["EventPlayerName"].astype(str) == "")
+                df_inf.loc[mask & df_inf[cand].notna(), "EventPlayerName"] = df_inf.loc[mask & df_inf[cand].notna(), cand].astype(str)
+                # stop after first useful mapping
+                break
+
+        # Infer IsEventPlayer if EventPlayerName present or if a 'primary_fielder' flag exists
+        try:
+            df_inf["IsEventPlayer"] = df_inf["IsEventPlayer"].fillna(False) | df_inf["EventPlayerName"].notna() & (df_inf["EventPlayerName"].astype(str) != "")
+        except Exception:
+            df_inf["IsEventPlayer"] = df_inf["EventPlayerName"].notna() & (df_inf["EventPlayerName"].astype(str) != "")
+
+        # Coerce types for downstream safety
+        try:
+            df_inf["BallInPlay"] = df_inf["BallInPlay"].astype(bool)
+        except Exception:
+            df_inf["BallInPlay"] = df_inf["BallInPlay"].notna()
+
+        return df_inf
 
     def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """Clean and convert data types (numeric, bool, strings)."""
@@ -149,7 +222,8 @@ class GTBaseballDataLoader:
         df_derived = df.copy()
 
         # --- Normalize Result-like columns ---
-        # Accept common variants and create a uniform 'Result' column if necessary
+        # Accept common variants and create a uniform 'Result' column if necessary.
+        # Also preserve the original raw column in ResultRaw for inspection.
         result_candidates = [
             "Result",
             "result",
@@ -158,6 +232,7 @@ class GTBaseballDataLoader:
             "Outcome",
             "ffx_play_result",
             "ResultRaw",
+            "play_result",
         ]
         result_col = None
         for c in result_candidates:
@@ -165,10 +240,17 @@ class GTBaseballDataLoader:
                 result_col = c
                 break
 
-        if result_col is None:
+        # preserve raw result text if any (use first available candidate)
+        if result_col is not None:
+            df_derived["ResultRaw"] = df_derived[result_col].astype(object).where(df_derived[result_col].notna(), pd.NA)
+            # canonical Result uses the found column (stringified)
+            if result_col != "Result":
+                df_derived["Result"] = df_derived[result_col].astype(object).where(df_derived[result_col].notna(), pd.NA)
+            else:
+                df_derived["Result"] = df_derived["Result"].astype(object).where(df_derived["Result"].notna(), pd.NA)
+        else:
+            df_derived["ResultRaw"] = pd.NA
             df_derived["Result"] = pd.NA
-        elif result_col != "Result":
-            df_derived["Result"] = df_derived[result_col]
 
         # --- Normalize BallInPlay variants ---
         bip_candidates = ["BallInPlay", "ball_in_play", "InPlay", "is_bip", "in_play"]
@@ -194,14 +276,23 @@ class GTBaseballDataLoader:
                 df_derived["BallInPlay"] = df_derived[bip_col].notna()
 
         # --- PitchOutcome: safe creation using _categorize_pitch_outcome ---
-        # Use get to avoid KeyError; ensure series exists
+        # Normalize strings and apply categorization. Keep Unknown when empty.
         result_series = df_derived.get("Result")
         if result_series is None:
-            result_series = pd.Series(["Unknown"] * len(df_derived), index=df_derived.index)
-        else:
-            result_series = result_series.astype(object).fillna("Unknown")
-        # apply categorization
-        df_derived["PitchOutcome"] = result_series.apply(self._categorize_pitch_outcome)
+            result_series = pd.Series([pd.NA] * len(df_derived), index=df_derived.index)
+        # normalize to string safely for matching
+        result_norm = result_series.astype(object).fillna("").astype(str).str.strip()
+        df_derived["PitchOutcome"] = result_norm.apply(lambda r: self._categorize_pitch_outcome(r if r != "" else None))
+
+        # Fallback: if BallInPlay True but outcome is Unknown/Other, mark as 'In Play'
+        try:
+            bip_mask = pd.to_numeric(df_derived.get("BallInPlay"), errors="coerce").astype('boolean').fillna(False)
+        except Exception:
+            bip_mask = df_derived.get("BallInPlay").notna() & (df_derived.get("BallInPlay") != 0)
+        if "PitchOutcome" in df_derived.columns:
+            fallback_mask = bip_mask & df_derived["PitchOutcome"].isin(["Unknown", "Other"])
+            if fallback_mask.any():
+                df_derived.loc[fallback_mask, "PitchOutcome"] = "In Play"
 
         # --- Hit quality (ExitVelo + LaunchAng) ---
         if "ExitVelo" in df_derived.columns and "LaunchAng" in df_derived.columns:
@@ -248,21 +339,37 @@ class GTBaseballDataLoader:
 
     def _categorize_pitch_outcome(self, result: Optional[str]) -> str:
         """Categorize pitch outcomes into main types."""
-        if result is None or (isinstance(result, float) and np.isnan(result)):
+        if result is None or (isinstance(result, float) and np.isnan(result)) or (str(result).strip() == ""):
             return "Unknown"
 
         result_str = str(result).lower()
 
-        if "ball" in result_str and "ball in play" not in result_str:
+        # common outcomes / tokens
+        if any(tok in result_str for tok in ["ball", "bb", "walk"]) and "in play" not in result_str:
             return "Ball"
-        if "strike" in result_str:
+        if any(tok in result_str for tok in ["strike", "k", "called strike", "swinging strike"]):
             return "Strike"
-        if "in play" in result_str or "inplay" in result_str:
+        if any(tok in result_str for tok in ["in play", "inplay", "bip", "single", "double", "triple", "home run", "homer", "hr", "groundout", "flyout", "ground out", "fly out", "out"]):
+            # more granular: single/double/triple/hr if present
+            if "home run" in result_str or "homer" in result_str or "hr" in result_str:
+                return "Home Run"
+            if "triple" in result_str:
+                return "Triple"
+            if "double" in result_str:
+                return "Double"
+            if "single" in result_str:
+                return "Single"
+            if "ground" in result_str:
+                return "Groundout"
+            if "fly" in result_str:
+                return "Flyout"
             return "In Play"
         if "foul" in result_str:
             return "Foul"
-        if "hit by pitch" in result_str or "hitbypitch" in result_str or "hbp" in result_str:
+        if any(tok in result_str for tok in ["hit by pitch", "hitbypitch", "hbp"]):
             return "HBP"
+        if any(tok in result_str for tok in ["sb", "stolen base"]):
+            return "Stolen Base"
         return "Other"
 
     def _calculate_hit_quality(self, row) -> str:
@@ -392,15 +499,99 @@ class GTBaseballDataLoader:
 
         # mapping: canonical_name -> list of possible variants (checked in order)
         mapping = {
-            "PitcherName": ["pitchername", "pitcher_name", "pitcher", "pitcherName", "pitcherName".lower()],
-            "BatterName": ["battername", "batter_name", "batter", "batterName", "batterName".lower()],
-            "ExitVelo": ["exitvelo", "exit_velo", "exit_velocity", "exitvelo".lower()],
-            "LaunchAng": ["launchang", "launch_angle", "launchangle", "launchang".lower()],
-            "Result": ["result", "resulttext", "playresult", "outcome", "ffx_play_result"],
-            "AtBat": ["atbat", "at_bat"],
+            "PitcherName": ["pitchername", "pitcher_name", "pitcher", "pitcherid", "pitcher_id"],
+            "BatterName": ["battername", "batter_name", "batter", "batterid", "batter_id"],
+            "ExitVelo": ["exitvelo", "exit_velo", "exit_velocity", "exit_speed", "hit_velo", "hit_velo", "hit_velo".lower()],
+            "LaunchAng": ["launchang", "launch_angle", "launchangle", "launch_ang", "launch_angle".lower()],
+            "Result": ["result", "resulttext", "playresult", "outcome", "ffx_play_result", "ResultRaw", "resultraw"],
+            "AtBat": ["atbat", "at_bat", "at_bat".lower(), "at_bat"],
             "Inning": ["inning"],
-            "PitchVelo": ["pitchvelo", "pitch_velo", "pitchvelocity", "pitch_speed"],
-            "BallInPlay": ["ballinplay", "ball_in_play", "inplay", "is_bip", "in_play"],
+            "PitchVelo": ["pitchvelo", "pitch_velo", "pitchvelocity", "pitch_speed", "throw_velo", "pitch_velo".lower()],
+            "BallInPlay": ["ballinplay", "ball_in_play", "inplay", "is_bip", "in_play", "is_in_play", "is_in_play".lower()],
+
+            # --- Baserunning canonical names / common variants (parquet sample) ---
+            "BaserunnerInitial": [
+                "baserunnerinitial", "baserunner_initial", "runner_initial", "from_base",
+                "base_start", "start_base", "initial_base", "start_base_primary_lead", "start_base_lead_differential"
+            ],
+            "BaserunnerSecondary": [
+                "baserunnersecondary", "baserunner_secondary", "secondary_lead",
+                "start_base_secondary", "start_base_primary_lead", "start_base_lead_differential",
+                "baseline_deviation_at_primary_lead", "baseline_deviation_at_release", "baseline_deviation_at_cross"
+            ],
+            "BaserunnerFinal": [
+                "baserunnerfinal", "baserunner_final", "runner_final", "to_base",
+                "base_end", "final_base", "next_base_primary_lead"
+            ],
+            "BaserunnerMaxSpeed": [
+                "baserunnermaxspeed", "baserunner_max_speed", "max_speed", "sprint_speed",
+                "maxspeed", "runner_speed", "max_speed_fielder", "max_speed_runner", "max_speed_runner"
+            ],
+
+            # parquet distance/time fields kept accessible under canonical-ish names
+            "dist_start_base_at_release": ["dist_start_base_at_release", "dist_start_base_at_cross"],
+            "dist_next_base_at_release": ["dist_next_base_at_release", "dist_next_base_at_cross"],
+            "total_dist_trav_runner": ["total_dist_trav_runner", "total_dist_trav_runner".lower()],
+            "total_dist_trav_fielder": ["total_dist_trav_fielder"],
+
+            # batter timing -> canonical used elsewhere
+            "BatterTimeToFirst": [
+                "battertimetofirst", "batter_time_to_first", "time_to_first_base",
+                "time_to_first", "time_to_first_base".lower(), "time_to_first_base"
+            ],
+
+            # --- Fielding / event player canonical names / variants (parquet sample) ---
+            "EventPlayerName": [
+                "eventplayername", "event_player_name", "player_involved", "fielder_name",
+                "fielder", "event_player", "name", "primary_fielder"
+            ],
+            "IsEventPlayer": [
+                "iseventplayer", "is_event_player", "event_player_flag", "is_fielder", "is_fielding_play",
+                "is_event", "is_eventplayer"
+            ],
+            "FielderRouteEfficiency": [
+                "fielderrouteefficiency", "fielder_route_efficiency", "route_efficiency",
+                "routeeff", "route_eff", "route_eff"
+            ],
+            "FielderReaction": [
+                "fielderreaction", "fielder_reaction", "reaction_time", "reaction", "time_top_speed_fielder"
+            ],
+            "FielderProbability": [
+                "fielderprobability", "fielder_probability", "catch_probability", "Probability", "probability"
+            ],
+            "FielderMaxSpeed": [
+                "fieldermaxspeed", "fielder_max_speed", "max_speed_fielder", "time_top_speed_fielder", "max_speed_runner", "max_speed"
+            ],
+            "FielderThrowDistance": [
+                "fielderthrowdistance", "fielder_throw_distance", "throw_distance", "throw_dist"
+            ],
+
+            # throw/transfer/pop/retrieval fields
+            "ThrowVelo": ["throw_velo", "throwvelo", "throw_velo"],
+            "ThrowSequenceID": ["throw_sequence_id", "throwsequenceid"],
+            "Transfer": ["transfer", "cleantransfer", "CleanTransfer"],
+            "OutOfPlay": ["OutOfPlay", "outofplay", "out_of_play"],
+            "PopTime": ["pop_time", "poptime"],
+            "RetrievalTime": ["retrieval"],
+
+            # hitting fields mapping
+            "HitVelo": ["hit_velo", "hitvelo", "hit_velo".lower()],
+            "LaunchAng_raw": ["launch_angle", "launchangle", "Launch_Ang", "launch_angle".lower()],
+            "SprayAngle": ["spray_angle"],
+            "IsRocket": ["is_rocket"],
+            "ActualDistance": ["actual_distance", "actualdistance", "ActualDistance"],
+            "HangTime": ["hang_time", "hangtime"],
+
+            # raw ids / references (keep available)
+            "mlb_game_str": ["mlb_game_str"],
+            "ffx_play_guid": ["ffx_play_guid"],
+            "ffx_pitch_time": ["ffx_pitch_time"],
+            "lead_baserunner": ["lead_baserunner"],
+
+            # helper: keep raw sample columns accessible if downstream code references them
+            "route_efficiency": ["route_efficiency"],
+            "reaction_angle": ["reaction_angle"],
+            "dist_to_play": ["dist_to_play", "distance_to_play"]
         }
 
         for canonical, candidates in mapping.items():
