@@ -11,10 +11,74 @@ class DefensiveAnalytics:
     Advanced defensive analytics for GT Baseball coaching insights.
     """
     
-    def __init__(self, data: pd.DataFrame):
-        self.data = data
-        self.fielding_data = data[(data['IsEventPlayer'] == True) & 
-                                 (data['EventPlayerName'].notna())]
+    def __init__(self, data=None):
+        """
+        Defensive constructor: accept None / list / DataFrame and normalize common
+        fielding-related column names so downstream methods don't KeyError.
+        """
+        import pandas as pd
+
+        # Ensure we always have a DataFrame to work with
+        if data is None:
+            df = pd.DataFrame()
+        elif isinstance(data, pd.DataFrame):
+            df = data.copy()
+        else:
+            try:
+                df = pd.DataFrame(data)
+            except Exception:
+                df = pd.DataFrame()
+
+        # Helper to find a candidate column (case-sensitive check against existing columns)
+        def _find(candidates):
+            for c in candidates:
+                if c in df.columns:
+                    return c
+            return None
+
+        # Common variants we expect from various exports
+        event_name_col = _find(['EventPlayerName', 'eventplayername', 'event_player_name', 'EventPlayer', 'player_name', 'name'])
+        is_event_col = _find(['IsEventPlayer', 'is_event_player', 'IsEvent', 'is_event', 'event_player_flag', 'is_eventplayer'])
+        route_col = _find(['FielderRouteEfficiency', 'route_efficiency', 'FielderRoute', 'routeEff'])
+        reaction_col = _find(['FielderReaction', 'reaction_time', 'fielder_reaction', 'reaction'])
+        maxspeed_col = _find(['FielderMaxSpeed', 'fielder_max_speed', 'FielderMax', 'max_speed_fielder', 'maxspeed', 'max_speed'])
+        prob_col = _find(['FielderProbability', 'FielderProb', 'Probability', 'fielder_probability', 'catch_probability'])
+
+        # Create canonical columns so other code can rely on these names
+        if event_name_col:
+            df['EventPlayerName'] = df[event_name_col]
+        else:
+            df['EventPlayerName'] = pd.NA
+
+        if is_event_col:
+            try:
+                df['IsEventPlayer'] = df[is_event_col].astype(bool)
+            except Exception:
+                df['IsEventPlayer'] = df[is_event_col].notna()
+        else:
+            # infer IsEventPlayer from presence of an event player name
+            df['IsEventPlayer'] = df['EventPlayerName'].notna() & (df['EventPlayerName'].astype(str) != '')
+
+        # Standardize route/reaction column existences for downstream usage
+        if route_col and 'FielderRouteEfficiency' not in df.columns:
+            df['FielderRouteEfficiency'] = df[route_col]
+        if reaction_col and 'FielderReaction' not in df.columns:
+            df['FielderReaction'] = df[reaction_col]
+        # Map max speed and probability if present
+        if maxspeed_col and 'FielderMaxSpeed' not in df.columns:
+            df['FielderMaxSpeed'] = pd.to_numeric(df[maxspeed_col], errors='coerce')
+        if prob_col and 'FielderProbability' not in df.columns:
+            df['FielderProbability'] = pd.to_numeric(df[prob_col], errors='coerce')
+
+        # Keep the normalized DataFrame and a pre-filtered fielding DataFrame
+        self.data = df
+        try:
+            self.fielding_data = df[(df['IsEventPlayer'] == True) & df['EventPlayerName'].notna()]
+        except Exception:
+            self.fielding_data = pd.DataFrame()
+
+        # Other initialization can follow (avoid assuming any other specific column names)
+        # ...existing initialization code (if any)...
     
     def analyze_fielder_positioning(self) -> Dict:
         """Analyze fielder positioning effectiveness."""
@@ -67,28 +131,42 @@ class DefensiveAnalytics:
         return shift_analysis
     
     def create_fielding_heatmap(self):
-        """Create fielding efficiency heatmap."""
-        if len(self.fielding_data) == 0:
+        """
+        Create a simple fielding performance heatmap per fielder.
+        Returns a Plotly figure or None if insufficient data.
+        """
+        # Build aggregation dict only for columns that exist to avoid KeyError
+        agg_map = {}
+        if 'FielderRouteEfficiency' in self.fielding_data.columns:
+            agg_map['FielderRouteEfficiency'] = 'mean'
+        if 'FielderReaction' in self.fielding_data.columns:
+            agg_map['FielderReaction'] = 'mean'
+        if 'FielderMaxSpeed' in self.fielding_data.columns:
+            agg_map['FielderMaxSpeed'] = 'max'
+        if 'FielderProbability' in self.fielding_data.columns:
+            agg_map['FielderProbability'] = 'mean'
+
+        if not agg_map:
+            # Not enough fields to compute a heatmap
             return None
-        
-        # Group by fielder and calculate metrics
-        fielder_metrics = self.fielding_data.groupby('EventPlayerName').agg({
-            'FielderRouteEfficiency': 'mean',
-            'FielderReaction': 'mean',
-            'FielderMaxSpeed': 'max',
-            'FielderProbability': 'mean'
-        }).round(2)
-        
-        # Create heatmap
-        fig = px.imshow(
-            fielder_metrics.T,
-            labels=dict(x="Fielder", y="Metric", color="Value"),
-            x=fielder_metrics.index,
-            y=['Route Efficiency', 'Reaction Time', 'Max Speed', 'Catch Probability'],
-            title="Fielding Performance Heatmap",
-            color_continuous_scale="RdYlGn"
+
+        fielder_metrics = self.fielding_data.groupby('EventPlayerName').agg(agg_map).round(2)
+        if fielder_metrics.empty:
+            return None
+
+        # Fill NaN -> 0 for visualization but keep original for values display
+        viz_values = fielder_metrics.fillna(0).values
+
+        fig = go.Figure(
+            data=go.Heatmap(
+                z=viz_values,
+                x=fielder_metrics.columns.tolist(),
+                y=fielder_metrics.index.tolist(),
+                colorscale='Viridis',
+                hovertemplate="%{y}<br>%{x}: %{z}<extra></extra>"
+            )
         )
-        
+        fig.update_layout(title="Fielding Metrics Heatmap", xaxis_title="", yaxis_title="")
         return fig
     
     def reaction_time_coaching_insights(self) -> Dict:
