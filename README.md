@@ -14,21 +14,25 @@ A baseball analytics tool for Georgia Tech Baseball.
    ```bash
    git clone <repository-url>
    cd GT_Baseball_6thTool
+   ```
 
 2. **Create a virtual environment**
    Your terminal prompt should now show (venv) at the beginning.
    ```bash
     python3 -m venv venv
     source venv/bin/activate
+   ```
    
 4. **Install dependencies**
 
     ```bash
     pip install -r requirements.txt
+    ```
 
 5. **Run the Dashboard**
     ```bash
     streamlit run scripts/baseball_dashboard.py
+    ```
 
 ## Troubleshooting
     If you get "command not found: python":
