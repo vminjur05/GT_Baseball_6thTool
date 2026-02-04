@@ -23,15 +23,12 @@ A baseball analytics tool for Georgia Tech Baseball.
    
 4. **Install dependencies**
 
-    Option A: Use updated package versions (Recommended)
+   ```bash
+   pip install -r requirements.txt
 
-    python3 -m pip install --upgrade pip setuptools wheel
-    python3 -m pip install pandas matplotlib numpy
-
-    Option B: If you need exact versions from requirements.txt
-
-    python3 -m pip install --upgrade pip setuptools wheel
-    python3 -m pip install -r requirements.txt
+5. **Run the Dashboard**
+   ```bash
+   streamlit run scripts/baseball_dashboard.py
 
 ## Troubleshooting
     If you get "command not found: python":
