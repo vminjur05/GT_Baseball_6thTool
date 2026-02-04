@@ -23,8 +23,8 @@ A baseball analytics tool for Georgia Tech Baseball.
    
 4. **Install dependencies**
 
-    ```bash
-    pip install -r requirements.txt
+   ```bash
+   pip install -r requirements.txt
 
 5. **Run the Dashboard**
     ```bash
