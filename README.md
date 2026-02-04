@@ -27,8 +27,8 @@ A baseball analytics tool for Georgia Tech Baseball.
    pip install -r requirements.txt
 
 5. **Run the Dashboard**
-    ```bash
-    streamlit run scripts/baseball_dashboard.py
+   ```bash
+   streamlit run scripts/baseball_dashboard.py
 
 ## Troubleshooting
     If you get "command not found: python":
