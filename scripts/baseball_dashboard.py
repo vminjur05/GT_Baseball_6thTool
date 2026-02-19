@@ -9,6 +9,8 @@ import seaborn as sns # type: ignore
 from data_loader import GTBaseballDataLoader
 from baseball_analyzer import GTBaseballAnalyzer
 from report_generator import ReportGenerator
+from db_integration import render_database_tab, auto_save_to_db
+
 
 class GTBaseballDashboard:
     """
@@ -71,6 +73,27 @@ class GTBaseballDashboard:
     def load_data(self):
         """Load and cache data."""
         if 'game_data' not in st.session_state:
+            try:
+                from db_integration import _get_db
+                db = _get_db()
+                summary = db.db_summary()
+                if summary["games"] > 0:
+                    st.info(f"📦 Database has {summary['games']} games and {summary['pitches']} pitches stored.")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("Load All Games from Database"):
+                            st.session_state.game_data = db.query_all_games()
+                            st.rerun()
+                    with col2:
+                        games_df = db.list_games()
+                        chosen = st.selectbox("Or load one game:", 
+                                            ["— pick one —"] + games_df["game_label"].tolist())
+                        if chosen != "— pick one —":
+                            st.session_state.game_data = db.query_game(chosen)
+                            st.rerun()
+                    st.divider()
+            except Exception:
+                st.warning("⚠️ Database not available or inaccessible.")
             loader = GTBaseballDataLoader()
             
             # File uploader
@@ -101,6 +124,7 @@ class GTBaseballDashboard:
                         df['GameID'] = f"Game_{i+1}"
                         df['FileName'] = file.name
                         all_data.append(df)
+                        auto_save_to_db(df, game_label=file.name, file_name=file.name)
                     except Exception as e:
                         st.error(f"Error loading {file.name}: {str(e)}")
                 
@@ -233,7 +257,7 @@ class GTBaseballDashboard:
         
         with col4:
             ev = self._numeric_series(data, ['ExitVelo', 'exit_velo', 'ExitVelocity', 'Exit_Velo'])
-            bip_mask = self._numeric_series(data, ['BallInPlay', 'ball_in_play', 'BallInPlay']).astype(bool)
+            bip_mask = self._numeric_series(data, ['BallInPlay', 'ball_in_play', 'BallInPlay']).fillna(0).astype(bool)
             if ev.dropna().size > 0 and bip_mask.any():
                 avg_exit_velo = ev[bip_mask].mean()
                 if pd.isna(avg_exit_velo):
@@ -335,7 +359,8 @@ class GTBaseballDashboard:
         """Render hitting analysis section."""
         st.header("🏏 Hitting Analysis")
         
-        hit_data = data[data['BallInPlay'] == True]
+        hit_data = data[data['BallInPlay'].fillna(False).astype(bool)]
+
         
         if len(hit_data) == 0:
             st.warning("No balls in play data available for hitting analysis.")
@@ -791,7 +816,7 @@ class GTBaseballDashboard:
         
         # Hitting insights
         summary.append("🏏 HITTING INSIGHTS:")
-        hit_data = data[data['BallInPlay'] == True]
+        hit_data = data[data['BallInPlay'].fillna(False).astype(bool)]
         
         if len(hit_data) > 0:
             avg_exit_velo = hit_data['ExitVelo'].mean()
@@ -841,7 +866,7 @@ class GTBaseballDashboard:
             insights.append(f"Strike rate below target (currently {strike_rate:.1f}%) - focus on command")
         
         # Exit velocity insight
-        hit_data = data[data['BallInPlay'] == True]
+        hit_data = data[data['BallInPlay'].fillna(False).astype(bool)]
         if len(hit_data) > 0:
             hard_hit_rate = (hit_data['ExitVelo'] > 95).sum() / len(hit_data) * 100
             if hard_hit_rate > 40:
@@ -902,14 +927,17 @@ class GTBaseballDashboard:
         st.subheader("Plays Worth Video Review")
         
         # Hard hit balls
-        hard_hits = data[(data['ExitVelo'] > 95) & (data['BallInPlay'] == True)]
+        hard_hits = data[(data['ExitVelo'] > 95) & (data['BallInPlay'].fillna(False).astype(bool))]
         if len(hard_hits) > 0:
             st.write("**Hard Hit Balls (>95 mph):**")
             video_data = hard_hits[['Inning', 'AtBat', 'BatterName', 'ExitVelo', 'LaunchAng', 'Result']].round(1)
             st.dataframe(video_data, use_container_width=True)
         
         # Exceptional fielding plays
-        field_data = data[(data['FielderProbability'] < 30) | (data['FielderRouteEfficiency'] > 95)]
+        field_data = data[
+            (pd.to_numeric(data['FielderProbability'], errors='coerce').fillna(100) < 30) |
+            (pd.to_numeric(data['FielderRouteEfficiency'], errors='coerce').fillna(0) > 95)
+        ]
         if len(field_data) > 0:
             st.write("**Exceptional Fielding Plays:**")
             field_video = field_data[['Inning', 'AtBat', 'EventPlayerName', 'FielderProbability', 'FielderRouteEfficiency']].round(1)
@@ -1317,9 +1345,9 @@ class GTBaseballDashboard:
         self.render_overview_metrics(filtered_data)
         
         # Analysis tabs - Updated with Accountability
-        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_db = st.tabs([
             "Pitching", "Hitting", "Defensive Analytics", "Baserunning", 
-            "Accountability", "Game Flow", "Coaching Reports", "Video Analysis"
+            "Accountability", "Game Flow", "Coaching Reports", "Video Analysis", "Database"
         ])
         
         with tab1:
@@ -1345,6 +1373,8 @@ class GTBaseballDashboard:
         
         with tab8:
             self.render_video_analysis_prep(filtered_data)
+        with tab_db:
+            render_database_tab()
 
 # Run the dashboard
 if __name__ == "__main__":
