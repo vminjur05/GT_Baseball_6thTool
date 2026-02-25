@@ -41,7 +41,10 @@ def auto_save_to_db(df: pd.DataFrame, game_label: str, file_name: str = None):
         if n > 0:
             st.toast(f"✅ Saved {n} rows for '{game_label}' to DB", icon="💾")
     except Exception as e:
-        st.toast(f"⚠️ DB save failed: {e}", icon="⚠️")
+        st.error(f"DB save failed: {type(e).__name__}: {e}")
+        st.code(repr(e))
+        # TEMP: also show what we tried to save
+        st.write({"game_label": game_label, "file_name": file_name, "rows": len(df), "cols": list(df.columns)[:15]})
 
 
 def render_database_tab():
@@ -110,7 +113,10 @@ def render_database_tab():
                     st.success(f"✅ Saved {n} rows for '{new_label}'")
                     st.rerun()
                 except Exception as e:
-                    st.error(f"Failed: {e}")
+                    st.error(f"DB save failed: {type(e).__name__}: {e}")
+                    st.code(repr(e))
+                    # TEMP: also show what we tried to save
+                    st.write({"game_label": game_label, "file_name": file_name, "rows": len(df), "cols": list(df.columns)[:15]})
 
             # Delete a game
             st.subheader("Remove a Game")
