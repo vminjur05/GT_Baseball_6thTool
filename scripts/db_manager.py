@@ -1,8 +1,24 @@
 """
-db_manager.py — GT Baseball 6th Tool Database Manager
+dbmanager.py — GT Baseball 6th Tool Database Manager
 ======================================================
 Free, zero-infrastructure SQLite database for storing game CSV/Parquet data.
 Eliminates the need to re-upload files every session.
+
+✅ Update (Feb 2026):
+- Blocks duplicate uploads even when the label changes (same CSV content).
+- Still blocks duplicate game_label (existing behavior).
+- Blocks duplicate file_name (even if label changes).
+- Adds friendly, explicit warning messages for duplicates (so it’s obvious in UI).
+
+How duplicate blocking works now:
+1) game_label duplicate -> blocked
+2) file_name duplicate  -> blocked (if file_name provided)
+3) content duplicate    -> blocked using a stable SHA256 of key columns
+
+NOTE:
+- We DO NOT block files just because they have the same *columns*.
+  That would incorrectly block “same game split into two files.”
+- Instead we block only truly identical content (stable hash).
 
 Schema is designed around the real Derived_Data CSV format:
     Inning, AtBat, PitcherName, BatterName, Result, PitchVelo,
@@ -13,23 +29,33 @@ Schema is designed around the real Derived_Data CSV format:
     FielderThrow, FielderThrowDistance, FielderMaxSpeed
 
 Usage:
-    from db_manager import GTBaseballDB
+    from dbmanager import GTBaseballDB
     db = GTBaseballDB()                        # creates data/gt_baseball.db
-    db.ingest_csv("csv_data/game1.csv", "GT vs UBC Game 1")
+    n, status, msg = db.ingest_csv("csv_data/game1.csv", "GT vs UBC Game 1")
+    if status == "warning": print(msg)
     df = db.query_all_games()
-    df = db.query_player("Mason Patel", role="pitcher")
 """
 
-import sqlite3
-import pandas as pd
-import numpy as np
-import os
-import logging
-from pathlib import Path
-from datetime import datetime
-from typing import Optional, List, Dict
+from __future__ import annotations
 
-logging.basicConfig(level=logging.INFO)
+import hashlib
+import logging
+import os
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+import json
+
+import numpy as np
+import pandas as pd
+
+# Updated logging configuration to ensure compatibility with Streamlit
+logging.basicConfig(
+    level=logging.DEBUG,  # Ensure DEBUG logs are shown
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    force=True,  # Override any existing logging configuration (e.g., from Streamlit)
+)
 logger = logging.getLogger(__name__)
 
 # Default DB location — lives inside your project's data/ folder
@@ -65,7 +91,51 @@ def _bool_to_int(val) -> int:
             return 0
     except (TypeError, ValueError):
         pass
-    return 1 if val else 0
+    return 1 if bool(val) else 0
+
+def _columns_signature(df: pd.DataFrame) -> str:
+    """
+    Stable signature of dataframe structure.
+    Ignores column order and capitalization.
+    """
+    cols = [str(c).strip().lower() for c in df.columns]
+    cols_sorted = sorted(cols)
+    payload = "|".join(cols_sorted).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _content_hash(df: pd.DataFrame) -> str:
+    """
+    Content fingerprint of dataframe.
+    Uses key baseball identity columns instead of whole CSV so
+    split exports of the same game still match.
+    """
+
+    # choose columns that uniquely identify a pitch
+    candidate_cols = [
+        "Inning",
+        "AtBat",
+        "PitcherName",
+        "BatterName",
+        "Result",
+        "PitchVelo",
+        "ExitVelo",
+        "LaunchAng"
+    ]
+
+    present = [c for c in candidate_cols if c in df.columns]
+    if not present:
+        # fallback — still deterministic
+        return hashlib.sha256(pd.util.hash_pandas_object(df, index=False).values).hexdigest()
+
+    # normalize values
+    df_small = df[present].fillna("").astype(str)
+
+    # sort rows so file ordering doesn't matter
+    df_small = df_small.sort_values(by=present).reset_index(drop=True)
+
+    payload = df_small.to_json().encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _categorize_pitch_outcome(result) -> str:
@@ -128,6 +198,13 @@ def _calculate_hit_quality(exit_velo, launch_angle) -> str:
     return "Medium Contact"
 
 
+def _clean_str(x) -> str:
+    """Normalize strings for comparison/storage."""
+    if x is None:
+        return ""
+    return str(x).strip()
+
+
 # ---------------------------------------------------------------------------
 # Main class
 # ---------------------------------------------------------------------------
@@ -138,11 +215,12 @@ class GTBaseballDB:
 
     Tables
     ------
-    games       — one row per uploaded file / game label
-    players     — deduplicated player roster (pitchers + batters + fielders)
-    pitches     — core pitch-by-pitch rows  (one per CSV row)
-    fielding    — fielding metrics (rows where IsEventPlayer = True)
-    baserunning — baserunning metrics (rows with runner data)
+    games         — one row per uploaded file / game label
+    players       — deduplicated player roster (pitchers + batters + fielders)
+    pitches       — core pitch-by-pitch rows  (one per CSV row)
+    fielding      — fielding metrics (rows where IsEventPlayer = True)
+    baserunning   — baserunning metrics (rows with runner data)
+    ingested_files— content-hash ledger to block identical uploads (even if label changes)
 
     The player_id foreign key links all three detail tables back to the
     players table, so you can pull everything for "Mason Patel" in one query.
@@ -161,7 +239,7 @@ class GTBaseballDB:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")   # safe concurrent reads
+        conn.execute("PRAGMA journal_mode = WAL")  # safe concurrent reads
         return conn
 
     # ------------------------------------------------------------------
@@ -187,9 +265,6 @@ class GTBaseballDB:
         );
 
         -- ── pitches ──────────────────────────────────────────────────────────
-        -- One row per CSV row. Stores all columns the dashboard needs directly,
-        -- including derived columns (ball_in_play, pitch_outcome, hit_quality)
-        -- so they are available when loading from DB without re-running data_loader.
         CREATE TABLE IF NOT EXISTS pitches (
             pitch_id          INTEGER PRIMARY KEY AUTOINCREMENT,
             game_id           INTEGER NOT NULL REFERENCES games(game_id),
@@ -237,6 +312,22 @@ class GTBaseballDB:
             final_base    REAL
         );
 
+        -- ── ingested_files (duplicate-content ledger) ───────────────────────
+        -- NOTE: schema must match your real DB:
+        --   game_label TEXT NOT NULL (unique)
+        --   content_sha256 TEXT NOT NULL UNIQUE
+        --   columns_sig TEXT NOT NULL
+        --   row_count INTEGER NOT NULL
+        CREATE TABLE IF NOT EXISTS ingested_files (
+            file_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_label     TEXT NOT NULL,
+            file_name      TEXT,
+            content_sha256 TEXT NOT NULL UNIQUE,
+            columns_sig    TEXT NOT NULL,
+            row_count      INTEGER NOT NULL,
+            created_at     TEXT DEFAULT (datetime('now'))
+        );
+
         -- ── indexes ──────────────────────────────────────────────────────────
         CREATE INDEX IF NOT EXISTS idx_pitches_game    ON pitches(game_id);
         CREATE INDEX IF NOT EXISTS idx_pitches_pitcher ON pitches(pitcher_id);
@@ -244,19 +335,149 @@ class GTBaseballDB:
         CREATE INDEX IF NOT EXISTS idx_fielding_game   ON fielding(game_id);
         CREATE INDEX IF NOT EXISTS idx_fielding_player ON fielding(fielder_id);
         CREATE INDEX IF NOT EXISTS idx_baserun_game    ON baserunning(game_id);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ingested_game_label ON ingested_files(game_label);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ingested_file_name  ON ingested_files(file_name);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ingested_sha        ON ingested_files(content_sha256);
+        CREATE INDEX IF NOT EXISTS idx_ingested_files_file_name   ON ingested_files(file_name);
         """
+
         with self._connect() as conn:
             conn.executescript(ddl)
+
+            # ---- schema self-heal for older DBs ----
+            # If someone created ingested_files with the old 3-column schema,
+            # add missing columns (SQLite supports ADD COLUMN).
+            cols = {
+                r[1] for r in conn.execute("PRAGMA table_info(ingested_files)").fetchall()
+            }  # r[1] is column name
+
+            if "columns_sig" not in cols:
+                conn.execute(
+                    "ALTER TABLE ingested_files ADD COLUMN columns_sig TEXT NOT NULL DEFAULT ''"
+                )
+            if "row_count" not in cols:
+                conn.execute(
+                    "ALTER TABLE ingested_files ADD COLUMN row_count INTEGER NOT NULL DEFAULT 0"
+                )
+
+    # ------------------------------------------------------------------
+    # Duplicate detection (NEW)
+    # ------------------------------------------------------------------
+
+    def _stable_df_hash(self, df: pd.DataFrame) -> str:
+        """
+        Compute a stable SHA256 hash for a game's pitch-level content.
+
+        Goals:
+        - robust to row order differences (we sort)
+        - robust to float jitter (we round)
+        - robust to minor string whitespace/case differences (we strip)
+        - only blocks truly identical content (NOT "same columns")
+        """
+        df = self._normalise_columns(df)
+
+        # Key columns that best define "same game content" across uploads
+        key_cols = [c for c in [
+            "Inning",
+            "AtBat",
+            "PitcherName",
+            "BatterName",
+            "Result",
+            "PitchVelo",
+            "ExitVelo",
+            "LaunchAng",
+            "BatterTimeToFirst",
+            "ActualDistance",
+        ] if c in df.columns]
+
+        if not key_cols:
+            # Fallback: still produce something deterministic (not great, but safe)
+            cols = "|".join(sorted([str(c) for c in df.columns]))
+            blob = f"{cols}::{len(df)}".encode("utf-8")
+            return hashlib.sha256(blob).hexdigest()
+
+        temp = df[key_cols].copy()
+
+        # Normalize data
+        for c in temp.columns:
+            if pd.api.types.is_numeric_dtype(temp[c]):
+                temp[c] = pd.to_numeric(temp[c], errors="coerce").round(3)
+            else:
+                temp[c] = temp[c].astype(str).fillna("").map(_clean_str)
+
+        temp = temp.fillna("")
+
+        # Sort stably so row order doesn't matter
+        temp = temp.sort_values(by=key_cols, kind="mergesort").reset_index(drop=True)
+
+        # Build stable payload
+        lines = temp.astype(str).agg("|".join, axis=1).tolist()
+        blob = ("\n".join(lines)).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()
+
+    def _duplicate_reason(
+        self,
+        df: pd.DataFrame,
+        game_label: str,
+        file_name: str | None = None,
+    ) -> Optional[str]:
+        """
+        Returns a human-friendly reason string if this upload is a duplicate,
+        else returns None.
+        """
+        game_label = _clean_str(game_label)
+        file_name = _clean_str(file_name) if file_name else None
+
+        # 1) duplicate game label (existing)
+        if self.game_exists(game_label):
+            return f"⚠️ Game label already exists in the database: '{game_label}'. Not added."
+
+        # 2) duplicate file name (requested)
+        if file_name:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT game_label, loaded_at FROM games WHERE file_name = ?",
+                    (file_name,),
+                ).fetchone()
+            if row:
+                existing_label, loaded_at = row
+                return (
+                    "⚠️ A file with this exact file name is already stored.\n"
+                    f"Existing entry: label='{existing_label}', file_name='{file_name}', added={loaded_at}.\n"
+                    "Not added."
+                )
+
+        # 3) duplicate content hash (NEW)
+        content_hash = self._stable_df_hash(df)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT game_label, file_name, created_at FROM ingested_files WHERE content_sha256 = ?",
+                (content_hash,),
+            ).fetchone()
+
+        if row:
+            prev_label, prev_file, prev_time = row
+            return (
+                "⚠️ This upload matches a file already in the database (same content).\n"
+                f"Existing entry: label='{prev_label}', file='{prev_file}', added={prev_time}.\n"
+                "Not added."
+            )
+
+        return None
 
     # ------------------------------------------------------------------
     # Player helpers
     # ------------------------------------------------------------------
 
-    def _get_or_create_player(self, conn: sqlite3.Connection,
-                               name: str, role: str = None) -> Optional[int]:
+    def _get_or_create_player(
+        self,
+        conn: sqlite3.Connection,
+        name: str,
+        role: str = None,
+    ) -> Optional[int]:
         """
-        Return the player_id for `name`, inserting if new.
-        If the player already exists with a different role, upgrades to 'multiple'.
+        Create or fetch a player id. (No GT-only filtering here — per your request.)
         """
         if not name or str(name).strip() in ("", "nan", "None", "NaN"):
             return None
@@ -264,11 +485,12 @@ class GTBaseballDB:
 
         conn.execute(
             "INSERT OR IGNORE INTO players (player_name, role) VALUES (?, ?)",
-            (name, role)
+            (name, role),
         )
 
         row = conn.execute(
-            "SELECT player_id, role FROM players WHERE player_name = ?", (name,)
+            "SELECT player_id, role FROM players WHERE player_name = ?",
+            (name,),
         ).fetchone()
         if row is None:
             return None
@@ -276,7 +498,8 @@ class GTBaseballDB:
         player_id, existing_role = row
         if role and existing_role and existing_role != role and existing_role != "multiple":
             conn.execute(
-                "UPDATE players SET role = 'multiple' WHERE player_id = ?", (player_id,)
+                "UPDATE players SET role = 'multiple' WHERE player_id = ?",
+                (player_id,),
             )
 
         return player_id
@@ -289,18 +512,26 @@ class GTBaseballDB:
         """Return True if this game label is already in the DB."""
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT game_id FROM games WHERE game_label = ?", (game_label,)
+                "SELECT game_id FROM games WHERE game_label = ?",
+                (_clean_str(game_label),),
             ).fetchone()
         return row is not None
 
-    def _create_game(self, conn: sqlite3.Connection,
-                     game_label: str, file_name: str = None) -> int:
+    def _create_game(
+        self,
+        conn: sqlite3.Connection,
+        game_label: str,
+        file_name: str = None,
+    ) -> int:
+        game_label = _clean_str(game_label)
+        file_name = _clean_str(file_name) if file_name else None
         conn.execute(
             "INSERT OR IGNORE INTO games (game_label, file_name) VALUES (?, ?)",
-            (game_label, file_name)
+            (game_label, file_name),
         )
         row = conn.execute(
-            "SELECT game_id FROM games WHERE game_label = ?", (game_label,)
+            "SELECT game_id FROM games WHERE game_label = ?",
+            (game_label,),
         ).fetchone()
         return row[0]
 
@@ -308,57 +539,108 @@ class GTBaseballDB:
     # Ingest
     # ------------------------------------------------------------------
 
-    def ingest_csv(self, filepath: str | Path, game_label: str,
-                   skip_if_exists: bool = True) -> int:
+    def ingest_csv(
+        self,
+        filepath: str | Path,
+        game_label: str,
+        skip_if_exists: bool = True,
+    ) -> Tuple[int, str, str]:
         """
         Read a CSV (or Parquet) file and store it in the DB.
 
-        Args:
-            filepath:       path to the file
-            game_label:     human-readable label, e.g. "GT vs UBC 10/24/25"
-            skip_if_exists: if True and game_label already in DB, do nothing
-
         Returns:
-            Number of pitch rows inserted (0 if skipped).
+            (rows_inserted, status, message)
+            status in {"success","warning","error"}
         """
         filepath = Path(filepath)
         if not filepath.exists():
-            raise FileNotFoundError(f"File not found: {filepath}")
-
-        if skip_if_exists and self.game_exists(game_label):
-            logger.info("'%s' already in DB — skipping.", game_label)
-            return 0
+            return 0, "error", f"File not found: {filepath}"
 
         if filepath.suffix.lower() in (".parquet", ".parq"):
             df = pd.read_parquet(filepath)
         else:
             df = pd.read_csv(filepath)
 
-        return self._ingest_dataframe(df, game_label, filepath.name)
+        # Duplicate checks (label / filename / content hash)
+        if skip_if_exists and self.game_exists(game_label):
+            return 0, "warning", f"⚠️ Game label already exists: '{game_label}'. Not added."
 
-    def ingest_dataframe(self, df: pd.DataFrame, game_label: str,
-                         file_name: str = None, skip_if_exists: bool = True) -> int:
+        dup_reason = self._duplicate_reason(df, game_label, filepath.name)
+        if dup_reason is not None:
+            return 0, "warning", dup_reason
+
+        try:
+            n = self._ingest_dataframe(df, game_label, filepath.name)
+            return n, "success", f"✅ Ingested '{game_label}': {n} rows inserted."
+        except Exception as e:
+            logger.exception("ingest_csv failed: %s", e)
+            return 0, "error", f"❌ Failed to ingest '{game_label}': {e}"
+
+    def ingest_dataframe(
+        self,
+        df: pd.DataFrame,
+        game_label: str,
+        file_name: str = None,
+        skip_if_exists: bool = True,
+    ) -> Tuple[int, str, str]:
         """
         Ingest an already-loaded DataFrame (e.g. from the Streamlit dashboard).
         This is the hook called from baseball_dashboard.py after a file upload.
+
+        Returns:
+            (rows_inserted, status, message)
         """
+        # Block by label if requested
         if skip_if_exists and self.game_exists(game_label):
-            logger.info("'%s' already in DB — skipping.", game_label)
-            return 0
-        return self._ingest_dataframe(df, game_label, file_name)
+            return 0, "warning", f"⚠️ Game label already exists: '{game_label}'. Not added."
 
-    def _ingest_dataframe(self, df: pd.DataFrame,
-                          game_label: str, file_name: str = None) -> int:
-        """Internal ingest — normalises columns then bulk-inserts row by row."""
+        dup_reason = self._duplicate_reason(df, game_label, file_name)
+        if dup_reason is not None:
+            return 0, "warning", dup_reason
 
+        try:
+            n = self._ingest_dataframe(df, game_label, file_name)
+            return n, "success", f"✅ Ingested '{game_label}': {n} rows inserted."
+        except Exception as e:
+            logger.exception("ingest_dataframe failed: %s", e)
+            return 0, "error", f"❌ Failed to ingest '{game_label}': {e}"
+
+    def _ingest_dataframe(
+        self,
+        df: pd.DataFrame,
+        game_label: str,
+        file_name: str = None,
+    ) -> int:
+        """
+        Core ingest logic (writes to DB). Assumes duplicate checks already passed.
+        """
         df = self._normalise_columns(df)
+
+        # Compute signatures for ingested_files ledger
+        content_hash = self._stable_df_hash(df)
+        columns_sig = _columns_signature(df)
+        row_count = int(len(df))
 
         rows_inserted = 0
         with self._connect() as conn:
             game_id = self._create_game(conn, game_label, file_name)
 
-            for _, row in df.iterrows():
+            # Record this file's content hash (prevents same file under new label)
+            conn.execute(
+                """
+                INSERT INTO ingested_files (game_label, file_name, content_sha256, columns_sig, row_count)
+                VALUES (?,?,?,?,?)
+                """,
+                (
+                    _clean_str(game_label),
+                    _clean_str(file_name) if file_name else None,
+                    content_hash,
+                    columns_sig,
+                    row_count,
+                ),
+            )
 
+            for _, row in df.iterrows():
                 # ── players ──────────────────────────────────────────────
                 pitcher_id = self._get_or_create_player(
                     conn, row.get("PitcherName"), role="pitcher"
@@ -389,30 +671,33 @@ class GTBaseballDB:
                     hit_quality = "Unknown"
 
                 # ── pitch row ────────────────────────────────────────────
-                cur = conn.execute("""
+                cur = conn.execute(
+                    """
                     INSERT INTO pitches
                         (game_id, inning, at_bat, pitcher_id, batter_id,
-                         result, pitch_velo, batter_time_first, batter_top,
-                         exit_velo, launch_angle, actual_distance,
-                         ball_in_play, pitch_outcome, hit_quality)
+                        result, pitch_velo, batter_time_first, batter_top,
+                        exit_velo, launch_angle, actual_distance,
+                        ball_in_play, pitch_outcome, hit_quality)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                """, (
-                    game_id,
-                    _safe(row.get("Inning")),
-                    _safe(row.get("AtBat")),
-                    pitcher_id,
-                    batter_id,
-                    _safe(row.get("Result")),
-                    _safe(row.get("PitchVelo")),
-                    _safe(row.get("BatterTimeToFirst")),
-                    _safe(row.get("BatterTop")),
-                    raw_ev,
-                    raw_la,
-                    _safe(row.get("ActualDistance")),
-                    bip,
-                    pitch_outcome,
-                    hit_quality,
-                ))
+                    """,
+                    (
+                        game_id,
+                        _safe(row.get("Inning")),
+                        _safe(row.get("AtBat")),
+                        pitcher_id,
+                        batter_id,
+                        _safe(row.get("Result")),
+                        _safe(row.get("PitchVelo")),
+                        _safe(row.get("BatterTimeToFirst")),
+                        _safe(row.get("BatterTop")),
+                        raw_ev,
+                        raw_la,
+                        _safe(row.get("ActualDistance")),
+                        bip,
+                        pitch_outcome,
+                        hit_quality,
+                    ),
+                )
                 pitch_id = cur.lastrowid
                 rows_inserted += 1
 
@@ -428,41 +713,51 @@ class GTBaseballDB:
                     fielder_id = self._get_or_create_player(
                         conn, fielder_name, role="fielder"
                     )
-                    conn.execute("""
+                    conn.execute(
+                        """
                         INSERT INTO fielding
                             (pitch_id, game_id, fielder_id, probability,
-                             route_efficiency, move, reaction, reaction_angle,
-                             transfer, throw, throw_distance, max_speed)
+                            route_efficiency, move, reaction, reaction_angle,
+                            transfer, throw, throw_distance, max_speed)
                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-                    """, (
-                        pitch_id, game_id, fielder_id,
-                        _safe(row.get("FielderProbability")),
-                        _safe(row.get("FielderRouteEfficiency")),
-                        _safe(row.get("FielderMove")),
-                        _safe(row.get("FielderReaction")),
-                        _safe(row.get("FielderReactionAngle")),
-                        _safe(row.get("FielderTransfer")),
-                        _safe(row.get("FielderThrow")),
-                        _safe(row.get("FielderThrowDistance")),
-                        _safe(row.get("FielderMaxSpeed")),
-                    ))
+                        """,
+                        (
+                            pitch_id,
+                            game_id,
+                            fielder_id,
+                            _safe(row.get("FielderProbability")),
+                            _safe(row.get("FielderRouteEfficiency")),
+                            _safe(row.get("FielderMove")),
+                            _safe(row.get("FielderReaction")),
+                            _safe(row.get("FielderReactionAngle")),
+                            _safe(row.get("FielderTransfer")),
+                            _safe(row.get("FielderThrow")),
+                            _safe(row.get("FielderThrowDistance")),
+                            _safe(row.get("FielderMaxSpeed")),
+                        ),
+                    )
 
                 # ── baserunning row (runner data present) ─────────────────
-                has_runner = pd.notna(row.get("BaserunnerMaxSpeed")) or \
-                             pd.notna(row.get("BaserunnerInitial"))
+                has_runner = pd.notna(row.get("BaserunnerMaxSpeed")) or pd.notna(
+                    row.get("BaserunnerInitial")
+                )
                 if has_runner:
-                    conn.execute("""
+                    conn.execute(
+                        """
                         INSERT INTO baserunning
                             (pitch_id, game_id, max_speed,
-                             initial_base, secondary, final_base)
+                            initial_base, secondary, final_base)
                         VALUES (?,?,?,?,?,?)
-                    """, (
-                        pitch_id, game_id,
-                        _safe(row.get("BaserunnerMaxSpeed")),
-                        _safe(row.get("BaserunnerInitial")),
-                        _safe(row.get("BaserunnerSecondary")),
-                        _safe(row.get("BaserunnerFinal")),
-                    ))
+                        """,
+                        (
+                            pitch_id,
+                            game_id,
+                            _safe(row.get("BaserunnerMaxSpeed")),
+                            _safe(row.get("BaserunnerInitial")),
+                            _safe(row.get("BaserunnerSecondary")),
+                            _safe(row.get("BaserunnerFinal")),
+                        ),
+                    )
 
         logger.info("Ingested '%s': %d rows inserted.", game_label, rows_inserted)
         return rows_inserted
@@ -475,32 +770,32 @@ class GTBaseballDB:
         """Map alternate column names to the canonical CSV column names."""
         df = df.copy()
         alias_map = {
-            "PitcherName":            ["pitcher_name", "pitcher", "pitchername"],
-            "BatterName":             ["batter_name", "batter", "battername"],
-            "Result":                 ["result", "play_result", "outcome", "ffx_play_result"],
-            "PitchVelo":              ["pitch_velo", "pitch_velocity", "throw_velo", "velo"],
-            "BatterTimeToFirst":      ["batter_time_to_first", "time_to_first"],
-            "BatterTop":              ["batter_top"],
-            "ExitVelo":               ["exit_velo", "exit_velocity", "hit_velo"],
-            "LaunchAng":              ["launch_angle", "launch_ang"],
-            "ActualDistance":         ["actual_distance"],
-            "BallInPlay":             ["ball_in_play", "inplay", "is_bip", "in_play"],
-            "PitchOutcome":           ["pitch_outcome", "pitchoutcome"],
-            "BaserunnerMaxSpeed":     ["baserunner_max_speed", "max_speed_runner"],
-            "BaserunnerInitial":      ["baserunner_initial", "start_base", "initial_base"],
-            "BaserunnerSecondary":    ["baserunner_secondary", "secondary_lead"],
-            "BaserunnerFinal":        ["baserunner_final", "final_base"],
-            "IsEventPlayer":          ["is_event_player", "iseventplayer"],
-            "EventPlayerName":        ["event_player_name", "primary_fielder"],
-            "FielderProbability":     ["fielder_probability", "probability", "catch_probability"],
+            "PitcherName": ["pitcher_name", "pitcher", "pitchername"],
+            "BatterName": ["batter_name", "batter", "battername"],
+            "Result": ["result", "play_result", "outcome", "ffx_play_result"],
+            "PitchVelo": ["pitch_velo", "pitch_velocity", "throw_velo", "velo"],
+            "BatterTimeToFirst": ["batter_time_to_first", "time_to_first"],
+            "BatterTop": ["batter_top"],
+            "ExitVelo": ["exit_velo", "exit_velocity", "hit_velo"],
+            "LaunchAng": ["launch_angle", "launch_ang"],
+            "ActualDistance": ["actual_distance"],
+            "BallInPlay": ["ball_in_play", "inplay", "is_bip", "in_play"],
+            "PitchOutcome": ["pitch_outcome", "pitchoutcome"],
+            "BaserunnerMaxSpeed": ["baserunner_max_speed", "max_speed_runner"],
+            "BaserunnerInitial": ["baserunner_initial", "start_base", "initial_base"],
+            "BaserunnerSecondary": ["baserunner_secondary", "secondary_lead"],
+            "BaserunnerFinal": ["baserunner_final", "final_base"],
+            "IsEventPlayer": ["is_event_player", "iseventplayer"],
+            "EventPlayerName": ["event_player_name", "primary_fielder"],
+            "FielderProbability": ["fielder_probability", "probability", "catch_probability"],
             "FielderRouteEfficiency": ["fielder_route_efficiency", "route_efficiency"],
-            "FielderMove":            ["fielder_move"],
-            "FielderReaction":        ["fielder_reaction", "reaction_time", "reaction"],
-            "FielderReactionAngle":   ["fielder_reaction_angle", "reaction_angle"],
-            "FielderTransfer":        ["fielder_transfer", "transfer"],
-            "FielderThrow":           ["fielder_throw"],
-            "FielderThrowDistance":   ["fielder_throw_distance", "throw_distance"],
-            "FielderMaxSpeed":        ["fielder_max_speed", "max_speed_fielder"],
+            "FielderMove": ["fielder_move"],
+            "FielderReaction": ["fielder_reaction", "reaction_time", "reaction"],
+            "FielderReactionAngle": ["fielder_reaction_angle", "reaction_angle"],
+            "FielderTransfer": ["fielder_transfer", "transfer"],
+            "FielderThrow": ["fielder_throw"],
+            "FielderThrowDistance": ["fielder_throw_distance", "throw_distance"],
+            "FielderMaxSpeed": ["fielder_max_speed", "max_speed_fielder"],
         }
         existing_lower = {c.lower(): c for c in df.columns}
         for canonical, aliases in alias_map.items():
@@ -614,8 +909,7 @@ class GTBaseballDB:
         df = self.query_all_games()
         return df[df["game_label"] == game_label].reset_index(drop=True)
 
-    def query_player(self, player_name: str,
-                     role: str = "any") -> pd.DataFrame:
+    def query_player(self, player_name: str, role: str = "any") -> pd.DataFrame:
         """
         Pull all data rows involving a specific player.
 
@@ -634,9 +928,9 @@ class GTBaseballDB:
 
         # "any" — rows where this person appears in any role
         mask = (
-            (df["PitcherName"] == player_name) |
-            (df["BatterName"] == player_name) |
-            (df["EventPlayerName"] == player_name)
+            (df["PitcherName"] == player_name)
+            | (df["BatterName"] == player_name)
+            | (df["EventPlayerName"] == player_name)
         )
         return df[mask].reset_index(drop=True)
 
@@ -755,35 +1049,31 @@ class GTBaseballDB:
             if role:
                 return pd.read_sql(
                     "SELECT * FROM players WHERE role = ? OR role = 'multiple' ORDER BY player_name",
-                    conn, params=(role,)
+                    conn,
+                    params=(role,),
                 )
-            return pd.read_sql(
-                "SELECT * FROM players ORDER BY player_name", conn
-            )
+            return pd.read_sql("SELECT * FROM players ORDER BY player_name", conn)
 
     # ------------------------------------------------------------------
     # Bulk-ingest a whole folder
     # ------------------------------------------------------------------
 
-    def ingest_folder(self, folder: str | Path,
-                      label_prefix: str = "") -> Dict[str, int]:
+    def ingest_folder(self, folder: str | Path, label_prefix: str = "") -> Dict[str, int]:
         """
         Ingest every CSV and Parquet file in a folder.
 
-        Args:
-            folder:       path to csv_data/ or parquet_data/
-            label_prefix: optional prefix added to auto-generated labels
-
         Returns:
-            dict of {filename: rows_inserted}
+            dict of {filename: rows_inserted} (skipped duplicates return 0)
         """
         folder = Path(folder)
-        results = {}
+        results: Dict[str, int] = {}
         for f in sorted(folder.iterdir()):
             if f.suffix.lower() in (".csv", ".parquet", ".parq"):
                 label = f"{label_prefix}{f.stem}" if label_prefix else f.stem
                 try:
-                    n = self.ingest_csv(f, game_label=label)
+                    n, status, msg = self.ingest_csv(f, game_label=label)
+                    if status == "warning":
+                        logger.info("Skipped %s: %s", f.name, msg)
                     results[f.name] = n
                 except Exception as e:
                     logger.warning("Failed to ingest %s: %s", f.name, e)
@@ -801,7 +1091,8 @@ class GTBaseballDB:
         """
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT game_id FROM games WHERE game_label = ?", (game_label,)
+                "SELECT game_id FROM games WHERE game_label = ?",
+                (_clean_str(game_label),),
             ).fetchone()
             if row is None:
                 logger.warning("Game '%s' not found.", game_label)
@@ -809,16 +1100,28 @@ class GTBaseballDB:
 
             game_id = row[0]
             pitch_ids = [
-                r[0] for r in conn.execute(
-                    "SELECT pitch_id FROM pitches WHERE game_id = ?", (game_id,)
+                r[0]
+                for r in conn.execute(
+                    "SELECT pitch_id FROM pitches WHERE game_id = ?",
+                    (game_id,),
                 ).fetchall()
             ]
             if pitch_ids:
                 placeholders = ",".join("?" * len(pitch_ids))
-                conn.execute(f"DELETE FROM fielding    WHERE pitch_id IN ({placeholders})", pitch_ids)
-                conn.execute(f"DELETE FROM baserunning WHERE pitch_id IN ({placeholders})", pitch_ids)
+                conn.execute(
+                    f"DELETE FROM fielding    WHERE pitch_id IN ({placeholders})",
+                    pitch_ids,
+                )
+                conn.execute(
+                    f"DELETE FROM baserunning WHERE pitch_id IN ({placeholders})",
+                    pitch_ids,
+                )
+
             conn.execute("DELETE FROM pitches WHERE game_id = ?", (game_id,))
             conn.execute("DELETE FROM games   WHERE game_id = ?", (game_id,))
+
+            # Also delete ingested_files ledger row(s) for this label
+            conn.execute("DELETE FROM ingested_files WHERE game_label = ?", (_clean_str(game_label),))
 
         logger.info("Deleted game '%s' (id=%d).", game_label, game_id)
         return True
@@ -827,19 +1130,21 @@ class GTBaseballDB:
         """Quick health-check: row counts per table."""
         with self._connect() as conn:
             return {
-                "games":       conn.execute("SELECT COUNT(*) FROM games").fetchone()[0],
-                "players":     conn.execute("SELECT COUNT(*) FROM players").fetchone()[0],
-                "pitches":     conn.execute("SELECT COUNT(*) FROM pitches").fetchone()[0],
-                "fielding":    conn.execute("SELECT COUNT(*) FROM fielding").fetchone()[0],
+                "games": conn.execute("SELECT COUNT(*) FROM games").fetchone()[0],
+                "players": conn.execute("SELECT COUNT(*) FROM players").fetchone()[0],
+                "pitches": conn.execute("SELECT COUNT(*) FROM pitches").fetchone()[0],
+                "fielding": conn.execute("SELECT COUNT(*) FROM fielding").fetchone()[0],
                 "baserunning": conn.execute("SELECT COUNT(*) FROM baserunning").fetchone()[0],
-                "db_path":     str(self.db_path),
-                "db_size_kb":  round(self.db_path.stat().st_size / 1024, 1)
-                               if self.db_path.exists() else 0,
+                "ingested_files": conn.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0],
+                "db_path": str(self.db_path),
+                "db_size_kb": round(self.db_path.stat().st_size / 1024, 1)
+                if self.db_path.exists()
+                else 0,
             }
 
 
 # ---------------------------------------------------------------------------
-# Quick smoke-test — run: python db_manager.py path/to/game.csv "Game Label"
+# Quick smoke-test — run: python dbmanager.py path/to/game.csv "Game Label"
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
@@ -850,8 +1155,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         path = Path(sys.argv[1])
         label = sys.argv[2] if len(sys.argv) > 2 else path.stem
-        n = db.ingest_csv(path, game_label=label)
-        print(f"Inserted {n} rows for '{label}'")
+        n, status, msg = db.ingest_csv(path, game_label=label)
+        print(msg)
 
     print("\n── DB Summary ──────────────────────────────────")
     for k, v in db.db_summary().items():
