@@ -216,3 +216,9 @@ __marimo__/
 # data files
 csv_data/
 parquet_data/
+
+# Streamlit secrets (contains credentials — never commit)
+.streamlit/secrets.toml
+
+# Local session token
+scripts/.session_token

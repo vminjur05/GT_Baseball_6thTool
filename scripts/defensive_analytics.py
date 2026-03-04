@@ -154,41 +154,82 @@ class DefensiveAnalytics:
     
     def create_fielding_heatmap(self):
         """
-        Create a simple fielding performance heatmap per fielder.
+        Create a per-metric fielder performance chart (4 subplots).
+        Each subplot shows one metric per player with a target reference line,
+        coloured green (meets target) or red (below target).
         Returns a Plotly figure or None if insufficient data.
         """
-        # Build aggregation dict only for columns that exist to avoid KeyError
-        agg_map = {}
-        if 'FielderRouteEfficiency' in self.fielding_data.columns:
-            agg_map['FielderRouteEfficiency'] = 'mean'
-        if 'FielderReaction' in self.fielding_data.columns:
-            agg_map['FielderReaction'] = 'mean'
-        if 'FielderMaxSpeed' in self.fielding_data.columns:
-            agg_map['FielderMaxSpeed'] = 'max'
-        if 'FielderProbability' in self.fielding_data.columns:
-            agg_map['FielderProbability'] = 'mean'
+        # metric col, subplot title, target value, 'higher'/'lower' is better
+        metric_config = [
+            ('FielderRouteEfficiency', 'Route Efficiency (%)',   85.0,  'higher'),
+            ('FielderReaction',        'Reaction Time (s)',       0.8,   'lower'),
+            ('FielderMaxSpeed',        'Max Speed (mph)',         None,  'higher'),
+            ('FielderProbability',     'Catch Probability (%)',   50.0,  'higher'),
+        ]
 
+        agg_map = {
+            col: 'mean'
+            for col, _, _, _ in metric_config
+            if col in self.fielding_data.columns
+        }
         if not agg_map:
-            # Not enough fields to compute a heatmap
             return None
 
-        fielder_metrics = self.fielding_data.groupby('EventPlayerName').agg(agg_map).round(2)
-        if fielder_metrics.empty:
+        metrics = self.fielding_data.groupby('EventPlayerName').agg(agg_map).round(2)
+        if metrics.empty:
             return None
 
-        # Fill NaN -> 0 for visualization but keep original for values display
-        viz_values = fielder_metrics.fillna(0).values
+        available = [
+            (col, label, target, direction)
+            for col, label, target, direction in metric_config
+            if col in metrics.columns
+        ]
+        if not available:
+            return None
 
-        fig = go.Figure(
-            data=go.Heatmap(
-                z=viz_values,
-                x=fielder_metrics.columns.tolist(),
-                y=fielder_metrics.index.tolist(),
-                colorscale='Viridis',
-                hovertemplate="%{y}<br>%{x}: %{z}<extra></extra>"
-            )
+        n = len(available)
+        ncols = 2
+        nrows = (n + 1) // ncols
+        fig = make_subplots(
+            rows=nrows, cols=ncols,
+            subplot_titles=[label for _, label, _, _ in available],
         )
-        fig.update_layout(title="Fielding Metrics Heatmap", xaxis_title="", yaxis_title="")
+
+        players = metrics.index.tolist()
+        for i, (col, _label, target, direction) in enumerate(available):
+            row, col_pos = i // ncols + 1, i % ncols + 1
+            values = metrics[col].tolist()
+
+            if target is not None:
+                colors = [
+                    '#2ecc71' if (v >= target if direction == 'higher' else v <= target)
+                    else '#e74c3c'
+                    for v in values
+                ]
+            else:
+                colors = ['#3498db'] * len(values)
+
+            fig.add_trace(
+                go.Bar(
+                    x=players, y=values,
+                    marker_color=colors,
+                    showlegend=False,
+                    hovertemplate='%{x}: %{y:.2f}<extra></extra>',
+                ),
+                row=row, col=col_pos,
+            )
+            if target is not None:
+                fig.add_hline(
+                    y=target, line_dash='dash', line_color='black',
+                    annotation_text=f'Target: {target}',
+                    row=row, col=col_pos,
+                )
+
+        fig.update_layout(
+            title='Fielder Performance by Metric',
+            height=350 * nrows,
+            margin=dict(t=80),
+        )
         return fig
     
     def reaction_time_coaching_insights(self) -> Dict:

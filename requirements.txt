@@ -9,3 +9,4 @@ scikit-learn>=1.1.0
 jupyter>=1.0.0
 openpyxl>=3.0.0
 fpdf>=1.7.2
+libsql-experimental>=0.0.1

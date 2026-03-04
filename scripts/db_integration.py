@@ -14,8 +14,12 @@ Duplicate handling in auto_save_to_db():
   - User clicks "Save Anyway" -> re-calls ingest with force=True.
 """
 
+import os
+import tempfile
+
 import streamlit as st
 import pandas as pd
+import plotly.express as px  # type: ignore
 from pathlib import Path
 
 try:
@@ -33,6 +37,23 @@ def _get_db() -> "GTBaseballDB":
     if "gt_db" not in st.session_state:
         st.session_state.gt_db = GTBaseballDB("data/gt_baseball.db")
     return st.session_state.gt_db
+
+
+def _invalidate_cache():
+    """Bump the cache version so every cached query re-fetches on next access."""
+    st.session_state["_db_cache_version"] = st.session_state.get("_db_cache_version", 0) + 1
+
+
+def _cached_db_query(cache_key: str, fn, *args, **kwargs):
+    """
+    Call fn(*args, **kwargs), cache the result in session_state[cache_key].
+    Re-fetches automatically whenever _invalidate_cache() has been called.
+    """
+    current_ver = st.session_state.get("_db_cache_version", 0)
+    cached = st.session_state.get(cache_key)
+    if cached is None or cached["version"] != current_ver:
+        st.session_state[cache_key] = {"version": current_ver, "data": fn(*args, **kwargs)}
+    return st.session_state[cache_key]["data"]
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +79,7 @@ def auto_save_to_db(df: pd.DataFrame, game_label: str, file_name: str = None):
         )
 
         if result["status"] == "inserted":
+            _invalidate_cache()
             st.toast(f"✅ Saved {result['rows']} rows for '{game_label}'", icon="💾")
 
         elif result["status"] == "skipped":
@@ -109,6 +131,7 @@ def render_duplicate_warning():
                     skip_if_exists=False,
                     force=True,
                 )
+                _invalidate_cache()
                 st.toast(
                     f"✅ Force-saved {result['rows']} rows for '{pending['game_label']}'",
                     icon="💾"
@@ -132,6 +155,9 @@ def render_duplicate_warning():
 def render_database_tab():
     """Render the full Database management tab inside the dashboard."""
     st.header("🗄️ Database Management")
+    if st.button("🔄 Refresh Data", help="Re-fetch all stats from the database"):
+        _invalidate_cache()
+        st.rerun()
 
     if not DB_AVAILABLE:
         st.error(
@@ -141,7 +167,7 @@ def render_database_tab():
         return
 
     db = _get_db()
-    summary = db.db_summary()
+    summary = _cached_db_query("_db_summary", db.db_summary)
 
     # ── Health metrics ─────────────────────────────────────────────────
     st.subheader("Database Overview")
@@ -151,7 +177,10 @@ def render_database_tab():
     c3.metric("Pitches",     summary["pitches"])
     c4.metric("Fielding",    summary["fielding"])
     c5.metric("Baserunning", summary["baserunning"])
-    st.caption(f"📁 `{summary['db_path']}`  •  {summary['db_size_kb']} KB")
+    if "db_location" in summary:
+        st.caption(f"☁️ Turso: `{summary['db_location']}`")
+    else:
+        st.caption(f"📁 `{summary['db_path']}`  •  {summary['db_size_kb']} KB")
 
     st.divider()
 
@@ -164,7 +193,7 @@ def render_database_tab():
     # ── Games ─────────────────────────────────────────────────────────
     with t1:
         st.subheader("Stored Games")
-        games_df = db.list_games()
+        games_df = _cached_db_query("_db_games", db.list_games)
 
         if games_df.empty:
             st.info("No games stored yet. Upload a CSV/Parquet file to get started.")
@@ -186,7 +215,6 @@ def render_database_tab():
         if st.button("💾 Save to Database") and up and new_label:
             try:
                 if up.name.lower().endswith(".parquet"):
-                    import tempfile, os
                     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
                     tmp.write(up.getvalue())
                     tmp.flush()
@@ -202,6 +230,7 @@ def render_database_tab():
                 )
 
                 if result["status"] == "inserted":
+                    _invalidate_cache()
                     st.success(f"✅ Saved {result['rows']} rows for '{new_label}'")
                     st.rerun()
                 elif result["status"] == "duplicate":
@@ -214,6 +243,7 @@ def render_database_tab():
                             df_new, game_label=new_label,
                             file_name=up.name, skip_if_exists=False, force=True
                         )
+                        _invalidate_cache()
                         st.success(f"✅ Force-saved {result2['rows']} rows for '{new_label}'")
                         st.rerun()
 
@@ -230,6 +260,7 @@ def render_database_tab():
             )
             if st.button("🗑️ Delete Game", type="secondary"):
                 if db.delete_game(to_delete):
+                    _invalidate_cache()
                     st.success(f"Deleted '{to_delete}'")
                     st.rerun()
 
@@ -246,7 +277,8 @@ def render_database_tab():
             ["All", "pitcher", "batter", "fielder", "multiple"],
             horizontal=True
         )
-        players_df = db.list_players(None if role_filter == "All" else role_filter)
+        role_key = role_filter.lower()
+        players_df = _cached_db_query(f"_db_players_{role_key}", db.list_players, None if role_filter == "All" else role_filter)
 
         if players_df.empty:
             st.info(
@@ -268,7 +300,7 @@ def render_database_tab():
                 "Look up as", ["any", "pitcher", "batter", "fielder"],
                 horizontal=True, key="lookup_role"
             )
-            player_df = db.query_player(chosen, role=role_as)
+            player_df = _cached_db_query(f"_db_player_{chosen}_{role_as}", db.query_player, chosen, role=role_as)
             if player_df.empty:
                 st.info(f"No {role_as} data found for {chosen}.")
             else:
@@ -284,18 +316,18 @@ def render_database_tab():
         st.divider()
         if st.button("🔄 Reload Roster from CSV"):
             db.reload_roster()
+            _invalidate_cache()
             st.success("Roster reloaded.")
             st.rerun()
 
     # ── Pitching Stats ────────────────────────────────────────────────
     with t3:
         st.subheader("Career Pitching Stats — GT Pitchers")
-        pitch_stats = db.query_pitching_stats()
+        pitch_stats = _cached_db_query("_db_pitch_stats", db.query_pitching_stats)
         if pitch_stats.empty:
             st.info("No GT pitching data yet.")
         else:
             st.dataframe(pitch_stats, use_container_width=True)
-            import plotly.express as px
             fig = px.bar(
                 pitch_stats, x="PitcherName", y="AvgVelo",
                 title="Average Pitch Velocity by Pitcher",
@@ -307,12 +339,11 @@ def render_database_tab():
     # ── Batting Stats ─────────────────────────────────────────────────
     with t4:
         st.subheader("Career Batting Stats — GT Batters")
-        bat_stats = db.query_batting_stats()
+        bat_stats = _cached_db_query("_db_bat_stats", db.query_batting_stats)
         if bat_stats.empty:
             st.info("No GT batting data yet.")
         else:
             st.dataframe(bat_stats, use_container_width=True)
-            import plotly.express as px
             plot_df = bat_stats.dropna(subset=["AvgExitVelo", "AvgLaunchAngle"])
             if not plot_df.empty:
                 fig = px.scatter(
@@ -336,12 +367,11 @@ def render_database_tab():
     # ── Fielding Stats ────────────────────────────────────────────────
     with t5:
         st.subheader("Career Fielding Stats — GT Fielders")
-        field_stats = db.query_fielding_stats()
+        field_stats = _cached_db_query("_db_field_stats", db.query_fielding_stats)
         if field_stats.empty:
             st.info("No GT fielding data yet.")
         else:
             st.dataframe(field_stats, use_container_width=True)
-            import plotly.express as px
             plot_df = field_stats.dropna(subset=["AvgRouteEfficiency", "AvgReactionTime"])
             if not plot_df.empty:
                 fig = px.scatter(
@@ -361,14 +391,13 @@ def render_database_tab():
     # ── Historical Trends ─────────────────────────────────────────────
     with t6:
         st.subheader("Game-by-Game Historical Trends")
-        trends = db.query_historical_trends()
+        trends = _cached_db_query("_db_trends", db.query_historical_trends)
         if len(trends) < 2:
             st.info("Load at least 2 games to see historical trends.")
             if not trends.empty:
                 st.dataframe(trends, use_container_width=True)
         else:
             st.dataframe(trends, use_container_width=True)
-            import plotly.express as px
 
             c1, c2 = st.columns(2)
             with c1:
