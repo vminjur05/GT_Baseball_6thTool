@@ -3,14 +3,40 @@ import pandas as pd
 import numpy as np
 import plotly.express as px  # type: ignore
 import plotly.graph_objects as go  # type: ignore
-from plotly.subplots import make_subplots  # type: ignore
-import matplotlib.pyplot as plt
-import seaborn as sns  # type: ignore
 from pathlib import Path
+import json, time, hmac, hashlib, base64
 from data_loader import GTBaseballDataLoader
 from baseball_analyzer import GTBaseballAnalyzer
 from report_generator import ReportGenerator
 from db_integration import render_database_tab, auto_save_to_db, render_duplicate_warning
+
+# ---------------------------------------------------------------------------
+# Session persistence — HMAC-signed URL token (deployment-safe, no files)
+# ---------------------------------------------------------------------------
+_TOKEN_SECRET = "gt_baseball_6th_tool_2025"
+_SESSION_DURATION = 2 * 3600  # 2 hours
+
+
+def _make_token() -> str:
+    """Generate a signed, time-stamped auth token encoded as a URL-safe string."""
+    ts = int(time.time())
+    payload = json.dumps({"ts": ts}).encode()
+    sig = hmac.new(_TOKEN_SECRET.encode(), payload, hashlib.sha256).hexdigest()
+    return base64.urlsafe_b64encode(
+        json.dumps({"ts": ts, "sig": sig}).encode()
+    ).decode()
+
+
+def _validate_token(token: str) -> bool:
+    """Return True if the token has a valid signature and hasn't expired."""
+    try:
+        data = json.loads(base64.urlsafe_b64decode(token.encode()).decode())
+        ts, sig = data["ts"], data["sig"]
+        payload = json.dumps({"ts": ts}).encode()
+        expected = hmac.new(_TOKEN_SECRET.encode(), payload, hashlib.sha256).hexdigest()
+        return hmac.compare_digest(sig, expected) and time.time() - ts < _SESSION_DURATION
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -35,7 +61,14 @@ def _load_gt_roster_names() -> set:
                 break
         if col is None:
             col = df.columns[0]
-        return set(df[col].dropna().astype(str).str.strip().str.lower())
+        gt_names = set(df[col].dropna().astype(str).str.strip().str.lower())
+        # Add reversed-token variants so "Last First" CSV names match "First Last" roster
+        variants = set()
+        for name in gt_names:
+            tokens = name.split()
+            if len(tokens) == 2:
+                variants.add(f"{tokens[1]} {tokens[0]}")
+        return gt_names | variants
     except Exception:
         return set()
 
@@ -45,6 +78,19 @@ def _filter_to_gt(names: list, gt_names: set) -> list:
     if not gt_names:
         return names  # no roster loaded → show everyone (safe degradation)
     return [n for n in names if str(n).strip().lower() in gt_names]
+
+
+def _filter_df_to_gt_fielders(data: pd.DataFrame, gt_names: set) -> pd.DataFrame:
+    """
+    Return rows where EventPlayerName is a GT player.
+    Falls back to the full dataset if no GT names are loaded.
+    """
+    if not gt_names or "EventPlayerName" not in data.columns:
+        return data
+    mask = data["EventPlayerName"].apply(
+        lambda n: str(n).strip().lower() in gt_names if pd.notna(n) else False
+    )
+    return data[mask]
 
 
 class GTBaseballDashboard:
@@ -85,13 +131,7 @@ class GTBaseballDashboard:
     # -----------------------------------------------------------------------
 
     def setup_page_config(self):
-        """Configure Streamlit page settings."""
-        st.set_page_config(
-            page_title="GT Baseball 6th Tool Dashboard",
-            page_icon="⚾",
-            layout="wide",
-            initial_sidebar_state="expanded",
-        )
+        """Apply custom CSS styles (page config set at module level)."""
         st.markdown("""
         <style>
         /* ── GT brand colours ─────────────────────────────────────────── */
@@ -127,6 +167,8 @@ class GTBaseballDashboard:
             background-color: #003057 !important;
             color: #B3A369 !important;
         }
+        /* ── Hide "Press Enter to apply" hint globally ─────────────────── */
+        div[data-testid="InputInstructions"] { display: none !important; }
         </style>
         """, unsafe_allow_html=True)
 
@@ -161,8 +203,8 @@ class GTBaseballDashboard:
                             st.session_state.game_data = db.query_game(chosen)
                             st.rerun()
                     st.divider()
-            except Exception:
-                st.warning("⚠️ Database not available or inaccessible.")
+            except Exception as _db_err:
+                st.warning(f"⚠️ Database not available or inaccessible: {_db_err}")
 
             loader = GTBaseballDataLoader()
 
@@ -279,10 +321,13 @@ class GTBaseballDashboard:
 
         # ── Game selection ───────────────────────────────────────────────
         if "GameID" in data.columns:
-            games = ["All Games"] + list(data["GameID"].unique())
-            selected_game = st.sidebar.selectbox("Select Game:", games)
-            if selected_game != "All Games":
-                data = data[data["GameID"] == selected_game]
+            all_games = list(data["GameID"].unique())
+            selected_games = st.sidebar.multiselect(
+                "Select Games:", options=all_games, default=all_games,
+                placeholder="Choose games…"
+            )
+            if selected_games:
+                data = data[data["GameID"].isin(selected_games)]
 
         st.sidebar.subheader("Player Filters")
 
@@ -331,6 +376,13 @@ class GTBaseballDashboard:
                 "⚠️ `scripts/gt_roster.csv` not found — showing all players. "
                 "Add the file to enable GT-only filtering."
             )
+
+        # ── Logout ────────────────────────────────────────────────────────
+        st.sidebar.divider()
+        if st.sidebar.button("🔓 Log Out", use_container_width=True):
+            st.session_state["authenticated"] = False
+            st.query_params.clear()
+            st.rerun()
 
         return filtered, selected_pitcher, selected_batter
 
@@ -401,6 +453,15 @@ class GTBaseballDashboard:
     def render_pitching_analysis(self, data):
         """Render pitching analysis section."""
         st.header("🥎 Pitching Analysis")
+        st.caption("Showing GT pitchers only.")
+
+        # Filter to GT pitchers only
+        gt_names = _load_gt_roster_names()
+        if gt_names and "PitcherName" in data.columns:
+            gt_pitcher_mask = data["PitcherName"].apply(
+                lambda n: pd.notna(n) and str(n).strip().lower() in gt_names
+            )
+            data = data[gt_pitcher_mask]
 
         pv = self._numeric_series(
             data, ["PitchVelo", "pitch_velo", "pitch_velocity", "throw_velo", "velo"]
@@ -494,6 +555,15 @@ class GTBaseballDashboard:
     def render_hitting_analysis(self, data):
         """Render hitting analysis section."""
         st.header("🏏 Hitting Analysis")
+        st.caption("Showing GT batters only.")
+
+        # Filter to GT batters only
+        gt_names = _load_gt_roster_names()
+        if gt_names and "BatterName" in data.columns:
+            gt_batter_mask = data["BatterName"].apply(
+                lambda n: pd.notna(n) and str(n).strip().lower() in gt_names
+            )
+            data = data[gt_batter_mask]
 
         hit_data = data[data["BallInPlay"].fillna(False).astype(bool)]
 
@@ -580,90 +650,21 @@ class GTBaseballDashboard:
                     )
 
     # -----------------------------------------------------------------------
-    # Fielding analysis
-    # -----------------------------------------------------------------------
-
-    def render_fielding_analysis(self, data):
-        """Render fielding analysis section."""
-        st.header("🥅 Fielding Analysis")
-
-        field_data = data[
-            (data["IsEventPlayer"] == True) & (data["EventPlayerName"].notna())
-        ]
-
-        if len(field_data) == 0:
-            st.warning("No fielding data available for analysis.")
-            return
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if "FielderRouteEfficiency" in field_data.columns:
-                st.plotly_chart(
-                    px.histogram(
-                        field_data.dropna(subset=["FielderRouteEfficiency"]),
-                        x="FielderRouteEfficiency",
-                        title="Route Efficiency Distribution",
-                        labels={"FielderRouteEfficiency": "Route Efficiency (%)"},
-                    ),
-                    use_container_width=True,
-                )
-
-        with col2:
-            if "FielderReaction" in field_data.columns:
-                st.plotly_chart(
-                    px.histogram(
-                        field_data.dropna(subset=["FielderReaction"]),
-                        x="FielderReaction",
-                        title="Reaction Time Distribution",
-                        labels={"FielderReaction": "Reaction Time (seconds)"},
-                    ),
-                    use_container_width=True,
-                )
-
-        if (
-            "FielderRouteEfficiency" in field_data.columns
-            and "FielderReaction" in field_data.columns
-        ):
-            st.subheader("Fielder Performance Comparison")
-            fielder_stats = (
-                field_data.groupby("EventPlayerName")
-                .agg({
-                    "FielderRouteEfficiency": "mean",
-                    "FielderReaction": "mean",
-                    "FielderMaxSpeed": "max",
-                })
-                .round(2)
-            )
-            fielder_stats.columns = ["Avg Route Efficiency", "Avg Reaction Time", "Max Speed"]
-            st.dataframe(fielder_stats, use_container_width=True)
-
-        if "FielderProbability" in field_data.columns:
-            prob_data = field_data.dropna(subset=["FielderProbability"])
-            if len(prob_data) > 0:
-                st.subheader("Catch Probability Analysis")
-                st.plotly_chart(
-                    px.scatter(
-                        prob_data,
-                        x="FielderProbability",
-                        y="FielderRouteEfficiency",
-                        color="EventPlayerName",
-                        title="Route Efficiency vs Catch Probability",
-                        labels={
-                            "FielderProbability": "Catch Probability (%)",
-                            "FielderRouteEfficiency": "Route Efficiency (%)",
-                        },
-                    ),
-                    use_container_width=True,
-                )
-
-    # -----------------------------------------------------------------------
     # Baserunning analysis
     # -----------------------------------------------------------------------
 
     def render_baserunning_analysis(self, data):
         """Render baserunning analysis section."""
         st.header("🏃 Baserunning Analysis")
+        st.caption("Showing GT baserunners only.")
+
+        # Filter to GT baserunners only
+        gt_names = _load_gt_roster_names()
+        if gt_names and "BatterName" in data.columns:
+            gt_runner_mask = data["BatterName"].apply(
+                lambda n: pd.notna(n) and str(n).strip().lower() in gt_names
+            )
+            data = data[gt_runner_mask]
 
         speed_col = self._find_col(
             data,
@@ -695,31 +696,38 @@ class GTBaseballDashboard:
             )
 
         with col2:
-            initial_col = self._find_col(
+            secondary_col = self._find_col(
                 base_data,
-                ["BaserunnerInitial", "baserunner_initial", "base_start",
-                 "initial_base", "from_base"],
+                ["BaserunnerSecondary", "baserunner_secondary", "secondary_lead"],
             )
-            if initial_col:
-                base_data_clean = base_data.dropna(subset=[initial_col])
-                if len(base_data_clean) > 0:
-                    st.plotly_chart(
-                        px.box(
-                            base_data_clean,
-                            x=initial_col,
-                            y=speed_col,
-                            title="Speed by Starting Base",
-                            labels={
-                                initial_col: "Starting Base",
-                                speed_col: "Max Speed (mph)",
-                            },
-                        ),
-                        use_container_width=True,
+            if secondary_col:
+                scatter_data = base_data.dropna(subset=[speed_col, secondary_col])
+                if len(scatter_data) > 0:
+                    fig_sc = px.scatter(
+                        scatter_data,
+                        x=secondary_col,
+                        y=speed_col,
+                        title="Secondary Lead vs Max Speed",
+                        labels={
+                            secondary_col: "Secondary Lead (ft)",
+                            speed_col: "Max Speed (mph)",
+                        },
                     )
+                    x_vals = scatter_data[secondary_col].to_numpy(dtype=float)
+                    y_vals = scatter_data[speed_col].to_numpy(dtype=float)
+                    if len(x_vals) >= 2:
+                        m, b = np.polyfit(x_vals, y_vals, 1)
+                        x_line = np.linspace(x_vals.min(), x_vals.max(), 100)
+                        fig_sc.add_scatter(
+                            x=x_line, y=m * x_line + b,
+                            mode="lines", name="Trend",
+                            line={"color": "red", "dash": "dash"},
+                        )
+                    st.plotly_chart(fig_sc, use_container_width=True)
                 else:
-                    st.info("Insufficient data for base-by-base speed analysis.")
+                    st.info("Insufficient data for lead vs speed analysis.")
             else:
-                st.info("Base position data not available for detailed analysis.")
+                st.info("Secondary lead data not available.")
 
     # -----------------------------------------------------------------------
     # Game flow
@@ -762,105 +770,90 @@ class GTBaseballDashboard:
             st.plotly_chart(fig, use_container_width=True)
 
     # -----------------------------------------------------------------------
-    # Defensive coaching analysis
+    # Defensive coaching analysis — GT fielders only
     # -----------------------------------------------------------------------
 
     def render_defensive_coaching_analysis(self, data):
-        """Render defensive coaching insights."""
+        """Render defensive coaching insights — GT players only."""
         st.header("🛡️ Defensive Coaching Analytics")
+        st.caption("Showing GT players only — all pitch/ball-in-play data is retained.")
 
-        tracking_file = st.file_uploader(
-            "Upload tracking file (CSV or Parquet)", type=["csv", "parquet"]
+        gt_names = _load_gt_roster_names()
+
+        # Filter fielding rows to GT players before passing to DefensiveAnalytics
+        gt_fielding_data = _filter_df_to_gt_fielders(data, gt_names)
+
+        has_fielding = (
+            "IsEventPlayer" in gt_fielding_data.columns
+            and gt_fielding_data["IsEventPlayer"].sum() > 0
         )
-        expected_file = st.file_uploader(
-            "Optional expected positions (CSV or Parquet)", type=["csv", "parquet"]
-        )
-
-        tracking_df = None
-        expected_df = None
-        if tracking_file is not None:
-            if tracking_file.name.lower().endswith(".parquet"):
-                import tempfile, os
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
-                tmp.write(tracking_file.getvalue())
-                tmp.flush()
-                tracking_df = pd.read_parquet(tmp.name)
-                tmp.close()
-                os.unlink(tmp.name)
-            else:
-                tracking_df = pd.read_csv(tracking_file)
-
-        if expected_file is not None:
-            if expected_file.name.lower().endswith(".parquet"):
-                import tempfile, os
-                tmp2 = tempfile.NamedTemporaryFile(delete=False, suffix=".parquet")
-                tmp2.write(expected_file.getvalue())
-                tmp2.flush()
-                expected_df = pd.read_parquet(tmp2.name)
-                tmp2.close()
-                os.unlink(tmp2.name)
-            else:
-                expected_df = pd.read_csv(expected_file)
+        if not has_fielding:
+            st.warning(
+                "No GT fielding rows found. Make sure `scripts/gt_roster.csv` is present "
+                "and that EventPlayerName values match roster names exactly."
+            )
+            with st.expander("Debug: EventPlayerName values in data"):
+                if "EventPlayerName" in data.columns:
+                    st.write(data["EventPlayerName"].dropna().unique().tolist())
+                else:
+                    st.write("No EventPlayerName column found.")
+            return
 
         from defensive_analytics import DefensiveAnalytics
         try:
-            defensive_analyzer = DefensiveAnalytics(data)
+            defensive_analyzer = DefensiveAnalytics(gt_fielding_data)
         except TypeError:
             defensive_analyzer = DefensiveAnalytics()
             if hasattr(defensive_analyzer, "load_data"):
                 try:
-                    defensive_analyzer.load_data(data)
+                    defensive_analyzer.load_data(gt_fielding_data)
                 except Exception:
                     pass
 
-        def _safe_call(method_name, *args, **kwargs):
-            method = getattr(defensive_analyzer, method_name)
-            for attempt in [
-                lambda: method(*args, **kwargs),
-                lambda: method(*args),
-                lambda: method(),
-            ]:
-                try:
-                    return attempt()
-                except Exception:
-                    continue
-            return {"error": f"failed to call {method_name}"}
-
-        positioning = _safe_call("analyze_fielder_positioning", tracking_df, expected_df)
+        positioning = defensive_analyzer.analyze_fielder_positioning()
 
         if isinstance(positioning, dict) and "error" in positioning:
-            st.error("Positioning analysis failed: " + str(positioning.get("error")))
+            st.warning("Positioning analysis: " + str(positioning.get("error")))
         else:
             pos_df = pd.DataFrame(positioning).T
+            for col in pos_df.columns:
+                pos_df[col] = pd.to_numeric(pos_df[col], errors="ignore")
+
+            st.subheader("Fielder Positioning Summary")
             st.dataframe(pos_df, use_container_width=True)
 
             col1, col2 = st.columns(2)
             with col1:
-                fig = px.bar(
-                    x=pos_df.index,
-                    y=pos_df["avg_route_efficiency"],
-                    title="Average Route Efficiency by Fielder",
-                    labels={"x": "Fielder", "y": "Route Efficiency (%)"},
-                )
-                fig.add_hline(
-                    y=85, line_dash="dash", line_color="green",
-                    annotation_text="Target: 85%"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                if "avg_route_efficiency" in pos_df.columns:
+                    fig = px.bar(
+                        x=pos_df.index,
+                        y=pos_df["avg_route_efficiency"],
+                        title="Average Route Efficiency by GT Fielder",
+                        labels={"x": "Fielder", "y": "Route Efficiency (%)"},
+                    )
+                    fig.add_hline(
+                        y=85, line_dash="dash", line_color="green",
+                        annotation_text="Target: 85%"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
             with col2:
-                fig = px.scatter(
-                    x=pos_df["avg_reaction_time"],
-                    y=pos_df["avg_route_efficiency"],
-                    text=pos_df.index,
-                    title="Reaction Time vs Route Efficiency",
-                    labels={"x": "Avg Reaction Time (s)", "y": "Route Efficiency (%)"},
-                )
-                fig.add_vline(
-                    x=pos_df["avg_reaction_time"].mean(),
-                    line_dash="dash", annotation_text="Team Avg"
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                if (
+                    "avg_reaction_time" in pos_df.columns
+                    and "avg_route_efficiency" in pos_df.columns
+                ):
+                    fig = px.scatter(
+                        x=pos_df["avg_reaction_time"],
+                        y=pos_df["avg_route_efficiency"],
+                        text=pos_df.index,
+                        title="Reaction Time vs Route Efficiency",
+                        labels={"x": "Avg Reaction Time (s)", "y": "Route Efficiency (%)"},
+                    )
+                    fig.add_vline(
+                        x=pos_df["avg_reaction_time"].mean(),
+                        line_dash="dash", annotation_text="Team Avg"
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("Defensive Shift Effectiveness")
         shift_analysis = defensive_analyzer.validate_defensive_shifts()
@@ -872,6 +865,11 @@ class GTBaseballDashboard:
             f"{shift_analysis['optimal_positioning_rate']:.1f}%"
         )
 
+        perf_chart = defensive_analyzer.create_fielding_heatmap()
+        if perf_chart:
+            st.subheader("Fielder Performance by Metric")
+            st.plotly_chart(perf_chart, use_container_width=True)
+
         st.subheader("Coaching Recommendations")
         insights = defensive_analyzer.reaction_time_coaching_insights()
         if insights["players_needing_improvement"]:
@@ -882,11 +880,6 @@ class GTBaseballDashboard:
             st.success("**Top defensive performers:**")
             for player in insights["top_performers"]:
                 st.write(f"• {player}")
-
-        heatmap = defensive_analyzer.create_fielding_heatmap()
-        if heatmap:
-            st.subheader("Fielding Performance Heatmap")
-            st.plotly_chart(heatmap, use_container_width=True)
 
     # -----------------------------------------------------------------------
     # Coaching reports
@@ -990,9 +983,11 @@ class GTBaseballDashboard:
                 )
         summary.append("")
 
-        summary.append("🛡️ DEFENSIVE INSIGHTS:")
-        field_data = data[
-            (data["IsEventPlayer"] == True) & (data["EventPlayerName"].notna())
+        summary.append("🛡️ DEFENSIVE INSIGHTS (GT players):")
+        gt_names = _load_gt_roster_names()
+        field_data = _filter_df_to_gt_fielders(data, gt_names)
+        field_data = field_data[
+            (field_data["IsEventPlayer"] == True) & (field_data["EventPlayerName"].notna())
         ]
         if len(field_data) > 0:
             fre = self._numeric_series(
@@ -1049,14 +1044,16 @@ class GTBaseballDashboard:
                     "review pitch selection/location"
                 )
 
-        field_data = data[
-            (data["IsEventPlayer"] == True) & (data["EventPlayerName"].notna())
+        gt_names = _load_gt_roster_names()
+        field_data = _filter_df_to_gt_fielders(data, gt_names)
+        field_data = field_data[
+            (field_data["IsEventPlayer"] == True) & (field_data["EventPlayerName"].notna())
         ]
         if len(field_data) > 0 and "FielderRouteEfficiency" in field_data.columns:
             low_efficiency = field_data[field_data["FielderRouteEfficiency"] < 80]
             if len(low_efficiency) > 0:
                 insights.append(
-                    f"{len(low_efficiency)} fielding plays below 80% efficiency — "
+                    f"{len(low_efficiency)} GT fielding plays below 80% efficiency — "
                     "positioning review needed"
                 )
 
@@ -1142,33 +1139,87 @@ class GTBaseballDashboard:
             )
 
     # -----------------------------------------------------------------------
-    # Accountability metrics
+    # Accountability metrics — GT players only
     # -----------------------------------------------------------------------
 
     def render_accountability_metrics(self, data):
-        """Render accountability metrics dashboard."""
+        """Render accountability metrics dashboard — GT players only."""
         st.header("📊 Accountability Metrics")
+        st.caption("Defensive accountability is scoped to GT players only.")
+
+        gt_names = _load_gt_roster_names()
+
+        # Keep all rows (preserves baserunning data) but null out non-GT
+        # player names so accountability only processes GT players.
+        gt_data = data.copy()
+        if gt_names:
+            if "EventPlayerName" in gt_data.columns:
+                non_gt_mask = gt_data["EventPlayerName"].apply(
+                    lambda n: pd.notna(n) and str(n).strip().lower() not in gt_names
+                )
+                gt_data.loc[non_gt_mask, "EventPlayerName"] = pd.NA
+                gt_data.loc[non_gt_mask, "IsEventPlayer"] = False
+            if "BatterName" in gt_data.columns:
+                non_gt_batter_mask = gt_data["BatterName"].apply(
+                    lambda n: pd.notna(n) and str(n).strip().lower() not in gt_names
+                )
+                gt_data.loc[non_gt_batter_mask, "BatterName"] = pd.NA
 
         from accountability_analytics import AccountabilityAnalytics
-        accountability = AccountabilityAnalytics(data)
+        accountability = AccountabilityAnalytics(gt_data)
+
+        # Initialise applied standards in session state on first load.
+        _std_defaults = {
+            'applied_sec_1b': 16.0,
+            'applied_sec_2b': 16.0,
+            'applied_sec_3b': 14.0,
+            'applied_max_speed': 20.0,
+            'applied_route_threshold': 85.0,
+            'applied_reaction_threshold': 0.8,
+        }
+        for k, v in _std_defaults.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
 
         with st.expander("⚙️ Configure Standards"):
+            st.markdown(
+                "<style>div[data-testid='InputInstructions']{display:none}</style>",
+                unsafe_allow_html=True,
+            )
             st.write("**Baserunning Standards:**")
-            col1, col2, col3 = st.columns(3)
-            col1.number_input("Secondary Lead - 1B (ft)", value=16.0, key="sec_1b")
-            col2.number_input("Secondary Lead - 2B (ft)", value=16.0, key="sec_2b")
-            col3.number_input("Secondary Lead - 3B (ft)", value=14.0, key="sec_3b")
+            col1, col2, col3, col4 = st.columns(4)
+            col1.number_input("Secondary Lead - 1B (ft)", value=st.session_state['applied_sec_1b'], key="sec_1b")
+            col2.number_input("Secondary Lead - 2B (ft)", value=st.session_state['applied_sec_2b'], key="sec_2b")
+            col3.number_input("Secondary Lead - 3B (ft)", value=st.session_state['applied_sec_3b'], key="sec_3b")
+            col4.number_input("Max Speed Threshold (mph)", value=st.session_state['applied_max_speed'], key="max_speed_threshold")
             st.write("**Defensive Standards:**")
             col1, col2 = st.columns(2)
             col1.number_input(
-                "Route Efficiency Threshold (%)", value=85.0, key="route_threshold"
+                "Route Efficiency Threshold (%)", value=st.session_state['applied_route_threshold'], key="route_threshold"
             )
             col2.number_input(
-                "Reaction Time Threshold (s)", value=0.8, key="reaction_threshold"
+                "Reaction Time Threshold (s)", value=st.session_state['applied_reaction_threshold'], key="reaction_threshold"
             )
+            if st.button("Apply Changes", type="primary"):
+                st.session_state['applied_sec_1b'] = st.session_state['sec_1b']
+                st.session_state['applied_sec_2b'] = st.session_state['sec_2b']
+                st.session_state['applied_sec_3b'] = st.session_state['sec_3b']
+                st.session_state['applied_max_speed'] = st.session_state['max_speed_threshold']
+                st.session_state['applied_route_threshold'] = st.session_state['route_threshold']
+                st.session_state['applied_reaction_threshold'] = st.session_state['reaction_threshold']
+                st.success("Standards updated.")
 
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "Baserunning", "Defensive Positioning", "Violations Report", "Team Summary"
+        # Wire applied standards into the analytics object so all calculations
+        # (compliance, violations, severity) reflect the saved thresholds.
+        accountability.standards['baserunning']['secondary_lead_1B'] = st.session_state['applied_sec_1b']
+        accountability.standards['baserunning']['secondary_lead_2B'] = st.session_state['applied_sec_2b']
+        accountability.standards['baserunning']['secondary_lead_3B'] = st.session_state['applied_sec_3b']
+        accountability.standards['baserunning']['max_speed_threshold'] = st.session_state['applied_max_speed']
+        accountability.standards['defensive']['route_efficiency_threshold'] = st.session_state['applied_route_threshold']
+        accountability.standards['defensive']['reaction_time_threshold'] = st.session_state['applied_reaction_threshold']
+
+        tab1, tab2, tab3 = st.tabs([
+            "Baserunning", "Violations Report", "Team Summary"
         ])
 
         with tab1:
@@ -1182,9 +1233,13 @@ class GTBaseballDashboard:
                 col3.metric("Avg Max Speed", f"{summary.get('avg_max_speed', 0):.1f} mph")
                 if "compliance_metrics" in summary:
                     compliance_data = []
-                    for base, metrics in summary["compliance_metrics"].items():
+                    for key, metrics in summary["compliance_metrics"].items():
+                        if key == "overall":
+                            label = "All Runners"
+                        else:
+                            label = key.replace("base_", "") + "B"
                         compliance_data.append({
-                            "Base": base.replace("base_", "") + "B",
+                            "Category": label,
                             "Expected Lead (ft)": metrics["expected_lead"],
                             "Actual Avg (ft)": round(metrics["avg_lead"], 1),
                             "Compliant Plays": metrics["compliant"],
@@ -1192,15 +1247,7 @@ class GTBaseballDashboard:
                             "Compliance Rate": f"{metrics['compliance_rate']:.1f}%",
                         })
                     st.dataframe(pd.DataFrame(compliance_data), use_container_width=True)
-                    charts = accountability._create_baserunning_charts()
-                    if "secondary_lead_comparison" in charts:
-                        st.plotly_chart(
-                            charts["secondary_lead_comparison"], use_container_width=True
-                        )
-                if (
-                    "players" in baserunning_analysis
-                    and baserunning_analysis["players"]
-                ):
+                if "players" in baserunning_analysis and baserunning_analysis["players"]:
                     st.write("**Individual Player Analysis:**")
                     player = st.selectbox(
                         "Select Player", list(baserunning_analysis["players"].keys())
@@ -1222,87 +1269,10 @@ class GTBaseballDashboard:
                                 "Max Speed Achieved",
                                 f"{player_data['max_speed'].get('max_achieved', 0):.1f} mph"
                             )
+            else:
+                st.info(baserunning_analysis.get("error", "No baserunning data available."))
 
         with tab2:
-            st.subheader("🛡️ Defensive Positioning Accountability")
-            defensive_analysis = (
-                accountability.analyze_defensive_positioning_accountability()
-            )
-            if "error" not in defensive_analysis and "team_summary" in defensive_analysis:
-                summary = defensive_analysis["team_summary"]
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Total Plays", summary.get("total_opportunities", 0))
-                col2.metric(
-                    "Avg Route Efficiency",
-                    f"{summary.get('avg_route_efficiency', 0):.1f}%"
-                )
-                col3.metric(
-                    "Avg Reaction Time",
-                    f"{summary.get('avg_reaction_time', 0):.2f}s"
-                )
-                if "compliance_metrics" in summary:
-                    st.write("**Team Compliance:**")
-                    for metric_name, metrics in summary["compliance_metrics"].items():
-                        col1, col2 = st.columns([3, 1])
-                        col1.write(f"**{metric_name.replace('_', ' ').title()}:**")
-                        col1.progress(metrics["compliance_rate"] / 100)
-                        col2.metric("Rate", f"{metrics['compliance_rate']:.1f}%")
-                if (
-                    "players" in defensive_analysis
-                    and defensive_analysis["players"]
-                ):
-                    st.write("**Individual Fielder Analysis:**")
-                    fielder = st.selectbox(
-                        "Select Fielder", list(defensive_analysis["players"].keys())
-                    )
-                    if fielder:
-                        fielder_data = defensive_analysis["players"][fielder]
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Total Plays", fielder_data["total_opportunities"])
-                        col2.metric(
-                            "Compliance Rate",
-                            f"{fielder_data.get('compliance_rate', 0):.1f}%"
-                        )
-                        if "route_efficiency" in fielder_data:
-                            violations = fielder_data["route_efficiency"].get(
-                                "below_threshold_count", 0
-                            )
-                            col3.metric(
-                                "Violations", violations,
-                                delta=f"-{violations}" if violations > 0 else None,
-                                delta_color="inverse",
-                            )
-                        if "route_efficiency" in fielder_data:
-                            re = fielder_data["route_efficiency"]
-                            st.write("**Route Efficiency:**")
-                            col1, col2, col3 = st.columns(3)
-                            col1.write(f"Expected: {re['expected']:.1f}%")
-                            col2.write(f"Actual Avg: {re['actual_avg']:.1f}%")
-                            best = re.get("best_play")
-                            col3.write(
-                                f"Best: {best:.1f}%"
-                                if best is not None and not pd.isna(best)
-                                else "Best: N/A"
-                            )
-                        if "reaction_time" in fielder_data:
-                            rt = fielder_data["reaction_time"]
-                            st.write("**Reaction Time:**")
-                            col1, col2, col3 = st.columns(3)
-                            col1.write(f"Expected: {rt['expected']:.2f}s")
-                            col2.write(f"Actual Avg: {rt['actual_avg']:.2f}s")
-                            best_r = rt.get("best_reaction")
-                            col3.write(
-                                f"Best: {best_r:.2f}s"
-                                if best_r is not None and not pd.isna(best_r)
-                                else "Best: N/A"
-                            )
-                    charts = accountability._create_defensive_charts()
-                    if "route_efficiency_by_player" in charts:
-                        st.plotly_chart(
-                            charts["route_efficiency_by_player"], use_container_width=True
-                        )
-
-        with tab3:
             st.subheader("⚠️ Violations Report")
             violations_df = accountability.generate_violation_report()
             if not violations_df.empty:
@@ -1318,23 +1288,13 @@ class GTBaseballDashboard:
                     len(violations_df[violations_df["Severity"] == "Medium"])
                     if "Severity" in violations_df else 0,
                 )
-                col1, col2 = st.columns(2)
-                with col1:
-                    if "Type" in violations_df:
-                        vt = st.multiselect(
-                            "Type",
-                            options=violations_df["Type"].unique(),
-                            default=list(violations_df["Type"].unique()),
-                        )
-                        violations_df = violations_df[violations_df["Type"].isin(vt)]
-                with col2:
-                    if "Severity" in violations_df:
-                        sv = st.multiselect(
-                            "Severity",
-                            options=violations_df["Severity"].unique(),
-                            default=list(violations_df["Severity"].unique()),
-                        )
-                        violations_df = violations_df[violations_df["Severity"].isin(sv)]
+                if "Severity" in violations_df.columns:
+                    sv = st.multiselect(
+                        "Filter by Severity",
+                        options=violations_df["Severity"].unique(),
+                        default=list(violations_df["Severity"].unique()),
+                    )
+                    violations_df = violations_df[violations_df["Severity"].isin(sv)]
                 st.dataframe(violations_df, use_container_width=True)
                 st.download_button(
                     "Download Violations Report",
@@ -1345,44 +1305,35 @@ class GTBaseballDashboard:
             else:
                 st.success("✅ No violations found! Team is meeting all standards.")
 
-        with tab4:
+        with tab3:
             st.subheader("📈 Team Summary")
             br2 = accountability.analyze_baserunning_accountability()
-            da2 = accountability.analyze_defensive_positioning_accountability()
-            br_score = da_score = 0
-            for analysis, key in [(br2, "br"), (da2, "da")]:
-                if (
-                    "team_summary" in analysis
-                    and "compliance_metrics" in analysis["team_summary"]
-                ):
-                    rates = [
-                        m["compliance_rate"]
-                        for m in analysis["team_summary"]["compliance_metrics"].values()
-                    ]
-                    val = sum(rates) / len(rates) if rates else 0
-                    if key == "br":
-                        br_score = val
-                    else:
-                        da_score = val
-            overall_score = (br_score + da_score) / 2
-            col1, col2, col3 = st.columns(3)
+            br_score = 0
+            if (
+                "team_summary" in br2
+                and "compliance_metrics" in br2["team_summary"]
+            ):
+                rates = [
+                    m["compliance_rate"]
+                    for m in br2["team_summary"]["compliance_metrics"].values()
+                ]
+                br_score = sum(rates) / len(rates) if rates else 0
+            col1, col2 = st.columns(2)
             col1.metric(
                 "Baserunning Compliance", f"{br_score:.1f}%",
-                delta=f"{br_score - 85:.1f}%" if br_score > 0 else None,
+                delta=f"{br_score - 85:.1f}% vs 85% target" if br_score > 0 else None,
             )
-            col2.metric(
-                "Defensive Compliance", f"{da_score:.1f}%",
-                delta=f"{da_score - 85:.1f}%" if da_score > 0 else None,
-            )
-            col3.metric(
-                "Overall Score", f"{overall_score:.1f}%",
-                delta=f"{overall_score - 85:.1f}%" if overall_score > 0 else None,
-            )
-            st.write("**Detailed Breakdown:**")
-            st.write("Baserunning:")
+            total_plays = sum(
+                m["total"]
+                for m in br2["team_summary"]["compliance_metrics"].values()
+            ) if "team_summary" in br2 and "compliance_metrics" in br2["team_summary"] else 0
+            compliant_plays = sum(
+                m["compliant"]
+                for m in br2["team_summary"]["compliance_metrics"].values()
+            ) if "team_summary" in br2 and "compliance_metrics" in br2["team_summary"] else 0
+            col2.metric("Compliant Plays", f"{compliant_plays} / {total_plays}")
+            st.write("**Secondary Lead Compliance:**")
             st.progress(min(br_score / 100, 1.0))
-            st.write("Defensive Positioning:")
-            st.progress(min(da_score / 100, 1.0))
 
     # -----------------------------------------------------------------------
     # Main run
@@ -1422,6 +1373,50 @@ class GTBaseballDashboard:
             render_database_tab()
 
 
+def _render_login():
+    """Show login gate. Returns True if authenticated."""
+    # Check URL token first (survives page refresh, works in deployment)
+    if not st.session_state.get("authenticated"):
+        token = st.query_params.get("_auth", "")
+        if token and _validate_token(token):
+            st.session_state["authenticated"] = True
+
+    if st.session_state.get("authenticated"):
+        return True
+
+    st.markdown(
+        "<style>div[data-testid='InputInstructions']{display:none!important}</style>"
+        "<h2 style='text-align:center;'>⚾ GT Baseball 6th Tool</h2>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='text-align:center;color:grey;'>Please log in to continue.</p>",
+        unsafe_allow_html=True,
+    )
+    st.divider()
+
+    # Plain inputs + button (no st.form) so Enter key does not submit
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login", use_container_width=True):
+        if username == "gt" and password == "yellowjackets":
+            st.query_params["_auth"] = _make_token()
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Invalid username or password.")
+
+    return False
+
+
 if __name__ == "__main__":
+    st.set_page_config(
+        page_title="GT Baseball 6th Tool Dashboard",
+        page_icon="⚾",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    if not _render_login():
+        st.stop()
     dashboard = GTBaseballDashboard()
     dashboard.run_dashboard()

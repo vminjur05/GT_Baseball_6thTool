@@ -1,8 +1,6 @@
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from typing import Dict, List, Tuple
 import streamlit as st
 
@@ -24,7 +22,7 @@ class AccountabilityAnalytics:
                 'secondary_lead_1B': 16.0,
                 'secondary_lead_2B': 16.0,
                 'secondary_lead_3B': 14.0,
-                'max_speed_threshold': 27.0,  # mph
+                'max_speed_threshold': 20.0,  # mph
             },
             'defensive': {
                 'route_efficiency_threshold': 85.0,  # percentage
@@ -145,38 +143,49 @@ class AccountabilityAnalytics:
         plays = []
         
         for idx, row in data.iterrows():
+            result = str(row.get('Result') or '').strip()
+            pitch_outcome = str(row.get('PitchOutcome') or '').strip()
+            is_out = (
+                'Out' in result or 'Double Play' in result
+                or 'Sacrifice' in result
+                or pitch_outcome in ('Flyout', 'Groundout')
+            )
             play = {
+                'game': row.get('game_label'),
                 'inning': row.get('Inning'),
                 'at_bat': row.get('AtBat'),
+                'batter': row.get('BatterName'),
                 'initial_base': row.get('BaserunnerInitial'),
                 'secondary_lead': row.get('BaserunnerSecondary'),
                 'final_base': row.get('BaserunnerFinal'),
                 'max_speed': row.get('BaserunnerMaxSpeed'),
+                'is_out': is_out,
                 'violations': []
             }
             
-            # Check secondary lead compliance
-            if pd.notna(play['secondary_lead']) and pd.notna(play['initial_base']):
-                expected = self.standards['baserunning'].get(
-                    f'secondary_lead_{int(play["initial_base"])}B', 16.0
-                )
+            # Check secondary lead compliance — use single threshold since base
+            # numbers are not in the data (BaserunnerInitial is distance in ft)
+            if pd.notna(play['secondary_lead']):
+                expected = self.standards['baserunning'].get('secondary_lead_1B', 16.0)
                 if play['secondary_lead'] < expected:
                     play['violations'].append({
                         'metric': 'Secondary Lead',
+                        'unit': 'ft',
                         'expected': expected,
                         'actual': play['secondary_lead'],
-                        'difference': play['secondary_lead'] - expected
+                        'difference': play['secondary_lead'] - expected,
                     })
-            
-            # Check max speed compliance
-            if pd.notna(play['max_speed']):
+
+            # Check max speed compliance — skip on outs (runners stop intentionally)
+            if pd.notna(play['max_speed']) and not play['is_out']:
                 expected_speed = self.standards['baserunning']['max_speed_threshold']
                 if play['max_speed'] < expected_speed:
                     play['violations'].append({
                         'metric': 'Max Speed',
+                        'unit': 'mph',
                         'expected': expected_speed,
                         'actual': play['max_speed'],
-                        'difference': play['max_speed'] - expected_speed
+                        'difference': play['max_speed'] - expected_speed,
                     })
             
             if play['violations']:
@@ -189,28 +198,24 @@ class AccountabilityAnalytics:
         summary = {
             'total_opportunities': len(data),
             'avg_secondary_lead': data['BaserunnerSecondary'].mean(),
-            'avg_max_speed': data['BaserunnerMaxSpeed'].mean(),
+            'avg_max_speed': data['BaserunnerMaxSpeed'].mean() if 'BaserunnerMaxSpeed' in data.columns else None,
             'compliance_metrics': {}
         }
-        
-        # Secondary lead compliance by base
-        for base in [1, 2, 3]:
-            base_data = data[
-                (data['BaserunnerInitial'] == base) &
-                (data['BaserunnerSecondary'].notna())
-            ]
-            if len(base_data) > 0:
-                expected = self.standards['baserunning'].get(f'secondary_lead_{base}B', 16.0)
-                compliant = len(base_data[base_data['BaserunnerSecondary'] >= expected])
-                
-                summary['compliance_metrics'][f'base_{base}'] = {
-                    'total': len(base_data),
-                    'compliant': compliant,
-                    'compliance_rate': (compliant / len(base_data)) * 100,
-                    'avg_lead': base_data['BaserunnerSecondary'].mean(),
-                    'expected_lead': expected
-                }
-        
+
+        # Secondary lead compliance — BaserunnerInitial/Secondary contain lead distances
+        # in feet, not base numbers, so we evaluate compliance across all runners at once.
+        secondary_data = data[data['BaserunnerSecondary'].notna()]
+        if len(secondary_data) > 0:
+            expected = self.standards['baserunning'].get('secondary_lead_1B', 16.0)
+            compliant = len(secondary_data[secondary_data['BaserunnerSecondary'] >= expected])
+            summary['compliance_metrics']['overall'] = {
+                'total': len(secondary_data),
+                'compliant': compliant,
+                'compliance_rate': (compliant / len(secondary_data)) * 100,
+                'avg_lead': secondary_data['BaserunnerSecondary'].mean(),
+                'expected_lead': expected,
+            }
+
         return summary
     
     def analyze_defensive_positioning_accountability(self) -> Dict:
@@ -305,37 +310,35 @@ class AccountabilityAnalytics:
         """Calculate team-wide defensive summary."""
         summary = {
             'total_opportunities': len(data),
-            'avg_route_efficiency': data['FielderRouteEfficiency'].mean(),
-            'avg_reaction_time': data['FielderReaction'].mean(),
+            'avg_route_efficiency': data['FielderRouteEfficiency'].mean() if 'FielderRouteEfficiency' in data.columns else None,
+            'avg_reaction_time': data['FielderReaction'].mean() if 'FielderReaction' in data.columns else None,
             'compliance_metrics': {}
         }
-        
+
         # Route efficiency compliance
         if 'FielderRouteEfficiency' in data.columns:
             route_data = data['FielderRouteEfficiency'].dropna()
             expected = self.standards['defensive']['route_efficiency_threshold']
             compliant = len(route_data[route_data >= expected])
-            
             summary['compliance_metrics']['route_efficiency'] = {
                 'total': len(route_data),
                 'compliant': compliant,
                 'compliance_rate': (compliant / len(route_data)) * 100 if len(route_data) > 0 else 0,
                 'expected': expected
             }
-        
+
         # Reaction time compliance
         if 'FielderReaction' in data.columns:
             reaction_data = data['FielderReaction'].dropna()
             expected = self.standards['defensive']['reaction_time_threshold']
             compliant = len(reaction_data[reaction_data <= expected])
-            
             summary['compliance_metrics']['reaction_time'] = {
                 'total': len(reaction_data),
                 'compliant': compliant,
                 'compliance_rate': (compliant / len(reaction_data)) * 100 if len(reaction_data) > 0 else 0,
                 'expected': expected
             }
-        
+
         return summary
     
     def create_accountability_dashboard_charts(self, metric_type: str = 'baserunning'):
@@ -356,21 +359,16 @@ class AccountabilityAnalytics:
         if len(baserunning_data) == 0:
             return charts
         
-        # Secondary lead compliance chart
-        compliance_data = []
-        for base in [1, 2, 3]:
-            base_data = baserunning_data[baserunning_data['BaserunnerInitial'] == base]
-            if len(base_data) > 0:
-                expected = self.standards['baserunning'].get(f'secondary_lead_{base}B', 16.0)
-                actual = base_data['BaserunnerSecondary'].mean()
-                
-                compliance_data.append({
-                    'Base': f'{base}B',
-                    'Expected': expected,
-                    'Actual': actual,
-                    'Difference': actual - expected
-                })
-        
+        # Secondary lead compliance chart — no base number in data, show overall
+        expected = self.standards['baserunning'].get('secondary_lead_1B', 16.0)
+        actual = baserunning_data['BaserunnerSecondary'].mean()
+        compliance_data = [{
+            'Base': 'All Runners',
+            'Expected': expected,
+            'Actual': round(actual, 2),
+            'Difference': round(actual - expected, 2),
+        }]
+
         if compliance_data:
             df = pd.DataFrame(compliance_data)
             
@@ -445,39 +443,33 @@ class AccountabilityAnalytics:
         return charts
     
     def generate_violation_report(self) -> pd.DataFrame:
-        """Generate a report of all accountability violations."""
+        """Generate a report of all baserunning accountability violations."""
         violations = []
-        
-        # Baserunning violations
+
         baserunning_analysis = self.analyze_baserunning_accountability()
         if 'plays' in baserunning_analysis:
             for play in baserunning_analysis['plays']:
                 for violation in play['violations']:
+                    batter = play['batter']
+                    if batter is None or pd.isna(batter):
+                        continue  # skip non-GT / unidentified players
+                    player = str(batter)
+                    game = play['game'] if play['game'] is not None and not pd.isna(play['game']) else '—'
+                    inning = play['inning'] if play['inning'] is not None else '—'
+                    at_bat = play['at_bat'] if play['at_bat'] is not None else '—'
+                    diff = float(violation['difference'])
+                    unit = violation.get('unit', '')
+                    unit_label = f' ({unit})' if unit else ''
                     violations.append({
-                        'Type': 'Baserunning',
-                        'Inning': play['inning'],
-                        'AtBat': play['at_bat'],
+                        'Player': player,
+                        'Game': game,
+                        'Inning': inning,
+                        'At Bat': at_bat,
                         'Metric': violation['metric'],
-                        'Expected': violation['expected'],
-                        'Actual': violation['actual'],
-                        'Difference': violation['difference'],
-                        'Severity': 'High' if abs(violation['difference']) > 2 else 'Medium'
+                        f'Expected{unit_label}': violation['expected'],
+                        f'Actual{unit_label}': round(float(violation['actual']), 2),
+                        f'Difference{unit_label}': round(diff, 2),
+                        'Severity': 'High' if abs(diff) > 2 else 'Medium',
                     })
-        
-        # Defensive violations
-        defensive_analysis = self.analyze_defensive_positioning_accountability()
-        if 'players' in defensive_analysis:
-            for player, data in defensive_analysis['players'].items():
-                if 'route_efficiency' in data:
-                    if data['route_efficiency'].get('below_threshold_count', 0) > 0:
-                        violations.append({
-                            'Type': 'Defensive',
-                            'Player': player,
-                            'Metric': 'Route Efficiency',
-                            'Expected': data['route_efficiency']['expected'],
-                            'Actual': data['route_efficiency']['actual_avg'],
-                            'Violations': data['route_efficiency']['below_threshold_count'],
-                            'Severity': 'High' if data['route_efficiency']['actual_avg'] < 75 else 'Medium'
-                        })
-        
+
         return pd.DataFrame(violations) if violations else pd.DataFrame()

@@ -11,10 +11,13 @@ Eliminates the need to re-upload files every session.
 - Adds friendly, explicit warning messages for duplicates (so it's obvious in UI).
 
 ✅ Update (Mar 2026):
-- Player records (players table) are now GT-roster-only.
-  Opponent pitchers/batters/fielders still appear in pitch data but with
-  NULL foreign keys, keeping the player table clean (~35 players, not 262).
-- reload_roster() also purges any opponent rows already stored.
+- Player records (players table) are GT-roster-only.
+  Opponent pitchers/batters/fielders appear in pitch data with NULL foreign keys.
+- fielder_name_raw column stores the raw CSV name on every fielding row so that
+  EventPlayerName is always populated (not dependent on the FK join).
+- _is_gt_player() checks both 'First Last' and 'Last First' token orderings so that
+  CSV systems exporting names in reversed order are handled correctly.
+- reload_roster() purges any non-GT player rows already stored.
 
 How duplicate blocking works:
 1) game_label duplicate -> blocked
@@ -43,6 +46,7 @@ import hashlib
 import logging
 import os
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -50,6 +54,13 @@ import json
 
 import numpy as np
 import pandas as pd
+
+try:
+    import libsql_experimental as libsql  # type: ignore
+    _LIBSQL_OK = True
+except ImportError:
+    libsql = None
+    _LIBSQL_OK = False
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -59,6 +70,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path("data/gt_baseball.db")
+
+
+def _get_turso_credentials() -> tuple[str | None, str | None]:
+    """
+    Read Turso URL + auth token from st.secrets (deployed) or env vars (local).
+    Returns (url, auth_token) or (None, None) if not configured.
+    """
+    try:
+        import streamlit as st  # type: ignore
+        url = st.secrets.get("TURSO_DATABASE_URL", "")
+        token = st.secrets.get("TURSO_AUTH_TOKEN", "")
+        if url and token:
+            return url, token
+    except Exception:
+        pass
+    url = os.environ.get("TURSO_DATABASE_URL", "")
+    token = os.environ.get("TURSO_AUTH_TOKEN", "")
+    return (url or None, token or None)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +208,7 @@ class GTBaseballDB:
     Tables
     ------
     games         — one row per uploaded file / game label
-    players       — GT roster players only (opponents stored with NULL FK)
+    players       — all players (GT and opponents); team='GT'|'opponent'
     pitches       — core pitch-by-pitch rows (one per CSV row)
     fielding      — fielding metrics (rows where IsEventPlayer = True)
     baserunning   — baserunning metrics (rows with runner data)
@@ -188,19 +217,51 @@ class GTBaseballDB:
 
     def __init__(self, db_path: str | Path = DEFAULT_DB_PATH):
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._turso_url, self._turso_token = _get_turso_credentials()
+        self._remote = bool(self._turso_url and self._turso_token and _LIBSQL_OK)
+        if not self._remote:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
-        logger.info("GTBaseballDB ready at %s", self.db_path)
+        mode = f"Turso ({self._turso_url})" if self._remote else str(self.db_path)
+        logger.info("GTBaseballDB ready — %s", mode)
 
     # ------------------------------------------------------------------
-    # Connection
+    # Connection / query helpers
     # ------------------------------------------------------------------
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
+        """Return a database connection (Turso remote or local SQLite)."""
+        if self._remote:
+            return libsql.connect(self._turso_url, auth_token=self._turso_token)
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode = WAL")
         return conn
+
+    @contextmanager
+    def _connection_context(self):
+        """Context manager for a database connection that works with both libsql and sqlite3."""
+        conn = self._connect()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def _read_sql(self, sql: str, conn, params=None) -> pd.DataFrame:
+        """Execute a SELECT and return a DataFrame (works with both drivers)."""
+        cur = conn.execute(sql, tuple(params) if params else ())
+        cols = [d[0] for d in cur.description]
+        return pd.DataFrame(cur.fetchall(), columns=cols)
 
     # ------------------------------------------------------------------
     # Schema
@@ -208,103 +269,119 @@ class GTBaseballDB:
 
     def _init_schema(self):
         """Create all tables if they don't already exist."""
-        ddl = """
-        CREATE TABLE IF NOT EXISTS games (
-            game_id     INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_label  TEXT    UNIQUE NOT NULL,
-            file_name   TEXT,
-            loaded_at   TEXT DEFAULT (datetime('now'))
-        );
+        # Split into individual statements — libsql does not support executescript
+        ddl_statements = [
+            """CREATE TABLE IF NOT EXISTS games (
+                game_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_label  TEXT    UNIQUE NOT NULL,
+                file_name   TEXT,
+                loaded_at   TEXT DEFAULT (datetime('now'))
+            )""",
+            """CREATE TABLE IF NOT EXISTS players (
+                player_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_name TEXT    UNIQUE NOT NULL,
+                role        TEXT,
+                team        TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS pitches (
+                pitch_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_id           INTEGER NOT NULL REFERENCES games(game_id),
+                inning            INTEGER,
+                at_bat            INTEGER,
+                pitcher_id        INTEGER REFERENCES players(player_id),
+                batter_id         INTEGER REFERENCES players(player_id),
+                batter_name_raw   TEXT,
+                result            TEXT,
+                pitch_velo        REAL,
+                batter_time_first REAL,
+                batter_top        REAL,
+                exit_velo         REAL,
+                launch_angle      REAL,
+                actual_distance   REAL,
+                ball_in_play      INTEGER DEFAULT 0,
+                pitch_outcome     TEXT,
+                hit_quality       TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS fielding (
+                fielding_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                pitch_id           INTEGER NOT NULL REFERENCES pitches(pitch_id),
+                game_id            INTEGER NOT NULL REFERENCES games(game_id),
+                fielder_id         INTEGER REFERENCES players(player_id),
+                fielder_name_raw   TEXT,
+                probability        REAL,
+                route_efficiency   REAL,
+                move               REAL,
+                reaction           REAL,
+                reaction_angle     REAL,
+                transfer           REAL,
+                throw              REAL,
+                throw_distance     REAL,
+                max_speed          REAL
+            )""",
+            """CREATE TABLE IF NOT EXISTS baserunning (
+                run_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                pitch_id      INTEGER NOT NULL REFERENCES pitches(pitch_id),
+                game_id       INTEGER NOT NULL REFERENCES games(game_id),
+                max_speed     REAL,
+                initial_base  REAL,
+                secondary     REAL,
+                final_base    REAL
+            )""",
+            """CREATE TABLE IF NOT EXISTS ingested_files (
+                file_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                game_label     TEXT NOT NULL,
+                file_name      TEXT,
+                content_sha256 TEXT NOT NULL UNIQUE,
+                columns_sig    TEXT NOT NULL DEFAULT '',
+                row_count      INTEGER NOT NULL DEFAULT 0,
+                created_at     TEXT DEFAULT (datetime('now'))
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_pitches_game       ON pitches(game_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pitches_pitcher    ON pitches(pitcher_id)",
+            "CREATE INDEX IF NOT EXISTS idx_pitches_batter     ON pitches(batter_id)",
+            "CREATE INDEX IF NOT EXISTS idx_fielding_game      ON fielding(game_id)",
+            "CREATE INDEX IF NOT EXISTS idx_fielding_player    ON fielding(fielder_id)",
+            "CREATE INDEX IF NOT EXISTS idx_baserun_game       ON baserunning(game_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ingested_game_label ON ingested_files(game_label)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ingested_sha        ON ingested_files(content_sha256)",
+        ]
 
-        CREATE TABLE IF NOT EXISTS players (
-            player_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-            player_name TEXT    UNIQUE NOT NULL,
-            role        TEXT
-        );
+        with self._connection_context() as conn:
+            for stmt in ddl_statements:
+                try:
+                    conn.execute(stmt)
+                except Exception as e:
+                    logger.debug("DDL skipped (%s): %.80s", e, stmt.strip())
 
-        CREATE TABLE IF NOT EXISTS pitches (
-            pitch_id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_id           INTEGER NOT NULL REFERENCES games(game_id),
-            inning            INTEGER,
-            at_bat            INTEGER,
-            pitcher_id        INTEGER REFERENCES players(player_id),
-            batter_id         INTEGER REFERENCES players(player_id),
-            result            TEXT,
-            pitch_velo        REAL,
-            batter_time_first REAL,
-            batter_top        REAL,
-            exit_velo         REAL,
-            launch_angle      REAL,
-            actual_distance   REAL,
-            ball_in_play      INTEGER DEFAULT 0,
-            pitch_outcome     TEXT,
-            hit_quality       TEXT
-        );
+            # Schema self-heal — local SQLite only (Turso schema is always clean)
+            if not self._remote:
+                self._self_heal_local(conn)
 
-        CREATE TABLE IF NOT EXISTS fielding (
-            fielding_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            pitch_id           INTEGER NOT NULL REFERENCES pitches(pitch_id),
-            game_id            INTEGER NOT NULL REFERENCES games(game_id),
-            fielder_id         INTEGER REFERENCES players(player_id),
-            probability        REAL,
-            route_efficiency   REAL,
-            move               REAL,
-            reaction           REAL,
-            reaction_angle     REAL,
-            transfer           REAL,
-            throw              REAL,
-            throw_distance     REAL,
-            max_speed          REAL
-        );
+    def _self_heal_local(self, conn):
+        """Apply ALTER TABLE migrations for older local SQLite databases."""
+        def _cols(table):
+            return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
-        CREATE TABLE IF NOT EXISTS baserunning (
-            run_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            pitch_id      INTEGER NOT NULL REFERENCES pitches(pitch_id),
-            game_id       INTEGER NOT NULL REFERENCES games(game_id),
-            max_speed     REAL,
-            initial_base  REAL,
-            secondary     REAL,
-            final_base    REAL
-        );
+        for col, sql in [
+            ("columns_sig", "ALTER TABLE ingested_files ADD COLUMN columns_sig TEXT NOT NULL DEFAULT ''"),
+            ("row_count",   "ALTER TABLE ingested_files ADD COLUMN row_count INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            if col not in _cols("ingested_files"):
+                conn.execute(sql)
 
-        CREATE TABLE IF NOT EXISTS ingested_files (
-            file_id        INTEGER PRIMARY KEY AUTOINCREMENT,
-            game_label     TEXT NOT NULL,
-            file_name      TEXT,
-            content_sha256 TEXT NOT NULL UNIQUE,
-            columns_sig    TEXT NOT NULL,
-            row_count      INTEGER NOT NULL,
-            created_at     TEXT DEFAULT (datetime('now'))
-        );
+        if "batter_name_raw" not in _cols("pitches"):
+            conn.execute("ALTER TABLE pitches ADD COLUMN batter_name_raw TEXT")
 
-        CREATE INDEX IF NOT EXISTS idx_pitches_game    ON pitches(game_id);
-        CREATE INDEX IF NOT EXISTS idx_pitches_pitcher ON pitches(pitcher_id);
-        CREATE INDEX IF NOT EXISTS idx_pitches_batter  ON pitches(batter_id);
-        CREATE INDEX IF NOT EXISTS idx_fielding_game   ON fielding(game_id);
-        CREATE INDEX IF NOT EXISTS idx_fielding_player ON fielding(fielder_id);
-        CREATE INDEX IF NOT EXISTS idx_baserun_game    ON baserunning(game_id);
+        if "fielder_name_raw" not in _cols("fielding"):
+            conn.execute("ALTER TABLE fielding ADD COLUMN fielder_name_raw TEXT")
 
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_ingested_game_label ON ingested_files(game_label);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_ingested_file_name  ON ingested_files(file_name);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_ingested_sha        ON ingested_files(content_sha256);
-        CREATE INDEX IF NOT EXISTS idx_ingested_files_file_name   ON ingested_files(file_name);
-        """
-
-        with self._connect() as conn:
-            conn.executescript(ddl)
-
-            # Schema self-heal for older DBs missing columns
-            cols = {
-                r[1] for r in conn.execute("PRAGMA table_info(ingested_files)").fetchall()
-            }
-            if "columns_sig" not in cols:
-                conn.execute(
-                    "ALTER TABLE ingested_files ADD COLUMN columns_sig TEXT NOT NULL DEFAULT ''"
-                )
-            if "row_count" not in cols:
-                conn.execute(
-                    "ALTER TABLE ingested_files ADD COLUMN row_count INTEGER NOT NULL DEFAULT 0"
-                )
+        if "team" not in _cols("players"):
+            conn.execute("ALTER TABLE players ADD COLUMN team TEXT")
+            gt = self._load_gt_roster()
+            if gt:
+                for pid, pname in conn.execute("SELECT player_id, player_name FROM players").fetchall():
+                    team = "GT" if pname.strip().lower() in gt else "opponent"
+                    conn.execute("UPDATE players SET team = ? WHERE player_id = ?", (team, pid))
 
     # ------------------------------------------------------------------
     # GT Roster loader (cached per instance)
@@ -336,11 +413,37 @@ class GTBaseballDB:
         return self._gt_names
 
     def _is_gt_player(self, name: str) -> bool:
-        """Return True if name appears in the GT roster (case-insensitive)."""
+        """
+        Return True if name appears in the GT roster (case-insensitive).
+        Also checks reversed token order to handle CSV systems that export
+        names as 'Last First' when the roster has 'First Last' (or vice versa).
+        """
         gt = self._load_gt_roster()
         if not gt:
             return True  # no roster file → treat everyone as GT (safe degradation)
-        return str(name).strip().lower() in gt
+        name_lower = str(name).strip().lower()
+        if name_lower in gt:
+            return True
+        tokens = name_lower.split()
+        if len(tokens) == 2:
+            return f"{tokens[1]} {tokens[0]}" in gt
+        return False
+
+    def _canonical_gt_name(self, name: str) -> str:
+        """
+        Return the canonical roster-order name for a GT player.
+        If the CSV has 'Last First' but the roster has 'First Last', this
+        returns the tokens reversed so all DB entries use a consistent form.
+        Falls back to the input name unchanged if no reversal is needed.
+        """
+        gt = self._load_gt_roster()
+        name_stripped = str(name).strip()
+        if not gt or name_stripped.lower() in gt:
+            return name_stripped
+        tokens = name_stripped.split()
+        if len(tokens) == 2 and f"{tokens[1].lower()} {tokens[0].lower()}" in gt:
+            return f"{tokens[1]} {tokens[0]}"
+        return name_stripped
 
     # ------------------------------------------------------------------
     # Duplicate detection
@@ -348,7 +451,7 @@ class GTBaseballDB:
 
     def _stable_df_hash(self, df: pd.DataFrame) -> str:
         """Compute a stable SHA256 hash for a game's pitch-level content."""
-        df = self._normalise_columns(df)
+        df = self._normalize_columns(df)
         key_cols = [c for c in [
             "Inning", "AtBat", "PitcherName", "BatterName", "Result",
             "PitchVelo", "ExitVelo", "LaunchAng", "BatterTimeToFirst", "ActualDistance",
@@ -385,7 +488,7 @@ class GTBaseballDB:
             return f"⚠️ Game label already exists in the database: '{game_label}'. Not added."
 
         if file_name:
-            with self._connect() as conn:
+            with self._connection_context() as conn:
                 row = conn.execute(
                     "SELECT game_label, loaded_at FROM games WHERE file_name = ?",
                     (file_name,),
@@ -399,7 +502,7 @@ class GTBaseballDB:
                 )
 
         content_hash = self._stable_df_hash(df)
-        with self._connect() as conn:
+        with self._connection_context() as conn:
             row = conn.execute(
                 "SELECT game_label, file_name, created_at FROM ingested_files WHERE content_sha256 = ?",
                 (content_hash,),
@@ -420,7 +523,7 @@ class GTBaseballDB:
 
     def _get_or_create_player(
         self,
-        conn: sqlite3.Connection,
+        conn,
         name: str,
         role: str = None,
     ) -> Optional[int]:
@@ -428,6 +531,8 @@ class GTBaseballDB:
         Return a player_id only for GT roster members.
         Opponent players return None — their pitch rows are still stored
         with NULL pitcher_id / batter_id / fielder_id.
+        Checks both 'First Last' and 'Last First' name orderings so that
+        CSV systems exporting names in reversed order are handled correctly.
         """
         if not name or str(name).strip() in ("", "nan", "None", "NaN"):
             return None
@@ -438,8 +543,12 @@ class GTBaseballDB:
         if not self._is_gt_player(name):
             return None
 
+        # Normalize to roster-canonical name so "Daniel Caleb" and "Caleb Daniel"
+        # don't create two separate player rows.
+        name = self._canonical_gt_name(name)
+
         conn.execute(
-            "INSERT OR IGNORE INTO players (player_name, role) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO players (player_name, role, team) VALUES (?, ?, 'GT')",
             (name, role),
         )
         row = conn.execute(
@@ -464,7 +573,7 @@ class GTBaseballDB:
     def reload_roster(self):
         """
         Clear the in-memory roster cache and re-read scripts/gt_roster.csv.
-        Also retroactively purges any opponent-only player rows already stored
+        Also retroactively purges any non-GT player rows already stored
         (NULL-ing their FK references first to satisfy foreign key constraints).
         """
         if hasattr(self, "_gt_names"):
@@ -473,33 +582,42 @@ class GTBaseballDB:
         if not gt:
             return
 
-        with self._connect() as conn:
+        with self._connection_context() as conn:
             all_players = conn.execute(
                 "SELECT player_id, player_name FROM players"
             ).fetchall()
-            to_delete = [
-                pid for pid, pname in all_players
-                if pname.strip().lower() not in gt
-            ]
+            to_delete = []
+            for pid, pname in all_players:
+                if not self._is_gt_player(pname):
+                    # True opponent — not GT at all
+                    to_delete.append(pid)
+                else:
+                    canonical = self._canonical_gt_name(pname)
+                    if canonical != pname:
+                        # GT player stored under wrong name order (e.g. "Daniel Caleb"
+                        # instead of canonical "Caleb Daniel") — remove the duplicate
+                        to_delete.append(pid)
+
             if to_delete:
                 placeholders = ",".join("?" * len(to_delete))
+                to_delete_t = tuple(to_delete)
                 conn.execute(
                     f"UPDATE pitches SET pitcher_id = NULL "
-                    f"WHERE pitcher_id IN ({placeholders})", to_delete
+                    f"WHERE pitcher_id IN ({placeholders})", to_delete_t
                 )
                 conn.execute(
                     f"UPDATE pitches SET batter_id = NULL "
-                    f"WHERE batter_id IN ({placeholders})", to_delete
+                    f"WHERE batter_id IN ({placeholders})", to_delete_t
                 )
                 conn.execute(
                     f"UPDATE fielding SET fielder_id = NULL "
-                    f"WHERE fielder_id IN ({placeholders})", to_delete
+                    f"WHERE fielder_id IN ({placeholders})", to_delete_t
                 )
                 conn.execute(
                     f"DELETE FROM players WHERE player_id IN ({placeholders})",
-                    to_delete,
+                    to_delete_t,
                 )
-                logger.info("reload_roster: purged %d non-GT player rows.", len(to_delete))
+                logger.info("reload_roster: purged %d non-canonical/non-GT player rows.", len(to_delete))
 
         # Bust cache so next call re-reads from disk
         if hasattr(self, "_gt_names"):
@@ -512,7 +630,7 @@ class GTBaseballDB:
 
     def game_exists(self, game_label: str) -> bool:
         """Return True if this game label is already in the DB."""
-        with self._connect() as conn:
+        with self._connection_context() as conn:
             row = conn.execute(
                 "SELECT game_id FROM games WHERE game_label = ?",
                 (_clean_str(game_label),),
@@ -521,7 +639,7 @@ class GTBaseballDB:
 
     def _create_game(
         self,
-        conn: sqlite3.Connection,
+        conn,
         game_label: str,
         file_name: str = None,
     ) -> int:
@@ -596,7 +714,7 @@ class GTBaseballDB:
             if dup_reason is not None:
                 # Extract matching game label for the UI warning
                 matching = game_label  # fallback
-                with self._connect() as conn:
+                with self._connection_context() as conn:
                     content_hash = self._stable_df_hash(df)
                     row = conn.execute(
                         "SELECT game_label FROM ingested_files WHERE content_sha256 = ?",
@@ -624,14 +742,14 @@ class GTBaseballDB:
         file_name: str = None,
     ) -> int:
         """Core ingest logic. Assumes duplicate checks already passed."""
-        df = self._normalise_columns(df)
+        df = self._normalize_columns(df)
 
         content_hash = self._stable_df_hash(df)
         columns_sig = _columns_signature(df)
         row_count = int(len(df))
 
         rows_inserted = 0
-        with self._connect() as conn:
+        with self._connection_context() as conn:
             game_id = self._create_game(conn, game_label, file_name)
 
             conn.execute(
@@ -677,14 +795,16 @@ class GTBaseballDB:
                     else "Unknown"
                 )
 
+                batter_name_raw = _safe(row.get("BatterName"))
+
                 cur = conn.execute(
                     """
                     INSERT INTO pitches
-                        (game_id, inning, at_bat, pitcher_id, batter_id,
+                        (game_id, inning, at_bat, pitcher_id, batter_id, batter_name_raw,
                          result, pitch_velo, batter_time_first, batter_top,
                          exit_velo, launch_angle, actual_distance,
                          ball_in_play, pitch_outcome, hit_quality)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         game_id,
@@ -692,6 +812,7 @@ class GTBaseballDB:
                         _safe(row.get("AtBat")),
                         pitcher_id,
                         batter_id,
+                        batter_name_raw,
                         _safe(row.get("Result")),
                         _safe(row.get("PitchVelo")),
                         _safe(row.get("BatterTimeToFirst")),
@@ -716,19 +837,20 @@ class GTBaseballDB:
 
                 if is_event:
                     fielder_name = row.get("EventPlayerName")
+                    fielder_name_raw = _safe(fielder_name)
                     fielder_id = self._get_or_create_player(
                         conn, fielder_name, role="fielder"
                     )
                     conn.execute(
                         """
                         INSERT INTO fielding
-                            (pitch_id, game_id, fielder_id, probability,
+                            (pitch_id, game_id, fielder_id, fielder_name_raw, probability,
                              route_efficiency, move, reaction, reaction_angle,
                              transfer, throw, throw_distance, max_speed)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
-                            pitch_id, game_id, fielder_id,
+                            pitch_id, game_id, fielder_id, fielder_name_raw,
                             _safe(row.get("FielderProbability")),
                             _safe(row.get("FielderRouteEfficiency")),
                             _safe(row.get("FielderMove")),
@@ -770,7 +892,7 @@ class GTBaseballDB:
     # Column normaliser
     # ------------------------------------------------------------------
 
-    def _normalise_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _normalize_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """Map alternate column names to the canonical CSV column names."""
         df = df.copy()
         alias_map = {
@@ -816,8 +938,8 @@ class GTBaseballDB:
 
     def list_games(self) -> pd.DataFrame:
         """Return a DataFrame of all stored games."""
-        with self._connect() as conn:
-            return pd.read_sql("SELECT * FROM games ORDER BY loaded_at DESC", conn)
+        with self._connection_context() as conn:
+            return self._read_sql("SELECT * FROM games ORDER BY loaded_at DESC", conn)
 
     def query_all_games(self) -> pd.DataFrame:
         """
@@ -834,7 +956,7 @@ class GTBaseballDB:
             p.inning                                            AS Inning,
             p.at_bat                                            AS AtBat,
             pit.player_name                                     AS PitcherName,
-            bat.player_name                                     AS BatterName,
+            COALESCE(p.batter_name_raw, bat.player_name)        AS BatterName,
             p.result                                            AS Result,
             p.result                                            AS ResultRaw,
             p.pitch_velo                                        AS PitchVelo,
@@ -856,7 +978,7 @@ class GTBaseballDB:
             f.throw                                             AS FielderThrow,
             f.throw_distance                                    AS FielderThrowDistance,
             f.max_speed                                         AS FielderMaxSpeed,
-            fld.player_name                                     AS EventPlayerName,
+            COALESCE(f.fielder_name_raw, fld.player_name)       AS EventPlayerName,
             CASE WHEN f.pitch_id IS NOT NULL THEN 1 ELSE 0 END AS IsEventPlayer,
 
             CASE
@@ -890,8 +1012,8 @@ class GTBaseballDB:
         LEFT JOIN baserunning b ON b.pitch_id   = p.pitch_id
         ORDER BY g.game_id, p.inning, p.at_bat
         """
-        with self._connect() as conn:
-            return pd.read_sql(sql, conn)
+        with self._connection_context() as conn:
+            return self._read_sql(sql, conn)
 
     def query_game(self, game_label: str) -> pd.DataFrame:
         """Return data for a single game (by label)."""
@@ -934,8 +1056,8 @@ class GTBaseballDB:
         GROUP BY p.pitcher_id
         ORDER BY TotalPitches DESC
         """
-        with self._connect() as conn:
-            return pd.read_sql(sql, conn)
+        with self._connection_context() as conn:
+            return self._read_sql(sql, conn)
 
     def query_batting_stats(self) -> pd.DataFrame:
         """Aggregated batting stats per GT batter across all games."""
@@ -956,8 +1078,8 @@ class GTBaseballDB:
         GROUP BY p.batter_id
         ORDER BY AvgExitVelo DESC
         """
-        with self._connect() as conn:
-            return pd.read_sql(sql, conn)
+        with self._connection_context() as conn:
+            return self._read_sql(sql, conn)
 
     def query_fielding_stats(self) -> pd.DataFrame:
         """Aggregated fielding stats per GT fielder across all games."""
@@ -975,8 +1097,8 @@ class GTBaseballDB:
         GROUP BY f.fielder_id
         ORDER BY AvgRouteEfficiency DESC
         """
-        with self._connect() as conn:
-            return pd.read_sql(sql, conn)
+        with self._connection_context() as conn:
+            return self._read_sql(sql, conn)
 
     def query_baserunning_stats(self) -> pd.DataFrame:
         """Aggregated baserunning stats across all games."""
@@ -993,8 +1115,8 @@ class GTBaseballDB:
         GROUP BY b.initial_base
         ORDER BY b.initial_base
         """
-        with self._connect() as conn:
-            return pd.read_sql(sql, conn)
+        with self._connection_context() as conn:
+            return self._read_sql(sql, conn)
 
     def query_historical_trends(self) -> pd.DataFrame:
         """Game-by-game trend data for historical comparison charts."""
@@ -1002,37 +1124,58 @@ class GTBaseballDB:
         SELECT
             g.game_label,
             g.loaded_at,
-            COUNT(p.pitch_id)                   AS TotalPitches,
-            ROUND(AVG(p.pitch_velo), 1)         AS AvgPitchVelo,
-            ROUND(AVG(p.exit_velo), 1)          AS AvgExitVelo,
-            ROUND(AVG(p.launch_angle), 1)       AS AvgLaunchAngle,
-            ROUND(AVG(f.route_efficiency), 1)   AS AvgRouteEfficiency,
-            ROUND(AVG(f.reaction), 2)           AS AvgReactionTime,
-            ROUND(AVG(b.max_speed), 1)          AS AvgRunnerSpeed,
-            ROUND(
-                100.0 * SUM(CASE WHEN p.pitch_outcome IN ('Strike','Foul') THEN 1 ELSE 0 END)
-                / NULLIF(COUNT(p.pitch_id), 0), 1
-            )                                   AS StrikeRate
+            p_s.TotalPitches,
+            p_s.AvgPitchVelo,
+            p_s.AvgExitVelo,
+            p_s.AvgLaunchAngle,
+            p_s.StrikeRate,
+            f_s.AvgRouteEfficiency,
+            f_s.AvgReactionTime,
+            b_s.AvgRunnerSpeed
         FROM games g
-        LEFT JOIN pitches     p ON p.game_id = g.game_id
-        LEFT JOIN fielding    f ON f.game_id = g.game_id
-        LEFT JOIN baserunning b ON b.game_id = g.game_id
-        GROUP BY g.game_id
+        LEFT JOIN (
+            SELECT
+                game_id,
+                COUNT(pitch_id)                                                  AS TotalPitches,
+                ROUND(AVG(pitch_velo), 1)                                        AS AvgPitchVelo,
+                ROUND(AVG(exit_velo), 1)                                         AS AvgExitVelo,
+                ROUND(AVG(launch_angle), 1)                                      AS AvgLaunchAngle,
+                ROUND(
+                    100.0 * SUM(CASE WHEN pitch_outcome IN ('Strike','Foul') THEN 1 ELSE 0 END)
+                    / NULLIF(COUNT(pitch_id), 0), 1
+                )                                                                AS StrikeRate
+            FROM pitches
+            GROUP BY game_id
+        ) p_s ON p_s.game_id = g.game_id
+        LEFT JOIN (
+            SELECT
+                game_id,
+                ROUND(AVG(route_efficiency), 1)  AS AvgRouteEfficiency,
+                ROUND(AVG(reaction), 2)          AS AvgReactionTime
+            FROM fielding
+            GROUP BY game_id
+        ) f_s ON f_s.game_id = g.game_id
+        LEFT JOIN (
+            SELECT
+                game_id,
+                ROUND(AVG(max_speed), 1)         AS AvgRunnerSpeed
+            FROM baserunning
+            GROUP BY game_id
+        ) b_s ON b_s.game_id = g.game_id
         ORDER BY g.game_id
         """
-        with self._connect() as conn:
-            return pd.read_sql(sql, conn)
+        with self._connection_context() as conn:
+            return self._read_sql(sql, conn)
 
     def list_players(self, role: str = None) -> pd.DataFrame:
         """Return all GT players in the DB, optionally filtered by role."""
-        with self._connect() as conn:
+        with self._connection_context() as conn:
             if role:
-                return pd.read_sql(
+                return self._read_sql(
                     "SELECT * FROM players WHERE role = ? OR role = 'multiple' ORDER BY player_name",
-                    conn,
-                    params=(role,),
+                    conn, params=(role,),
                 )
-            return pd.read_sql("SELECT * FROM players ORDER BY player_name", conn)
+            return self._read_sql("SELECT * FROM players ORDER BY player_name", conn)
 
     # ------------------------------------------------------------------
     # Bulk ingest
@@ -1061,7 +1204,7 @@ class GTBaseballDB:
 
     def delete_game(self, game_label: str) -> bool:
         """Remove a game and all its associated rows from every table."""
-        with self._connect() as conn:
+        with self._connection_context() as conn:
             row = conn.execute(
                 "SELECT game_id FROM games WHERE game_label = ?",
                 (_clean_str(game_label),),
@@ -1080,13 +1223,14 @@ class GTBaseballDB:
             ]
             if pitch_ids:
                 placeholders = ",".join("?" * len(pitch_ids))
+                pitch_ids_t = tuple(pitch_ids)
                 conn.execute(
                     f"DELETE FROM fielding    WHERE pitch_id IN ({placeholders})",
-                    pitch_ids,
+                    pitch_ids_t,
                 )
                 conn.execute(
                     f"DELETE FROM baserunning WHERE pitch_id IN ({placeholders})",
-                    pitch_ids,
+                    pitch_ids_t,
                 )
 
             conn.execute("DELETE FROM pitches WHERE game_id = ?", (game_id,))
@@ -1104,19 +1248,33 @@ class GTBaseballDB:
     # ------------------------------------------------------------------
 
     def db_summary(self) -> Dict:
-        """Quick health-check: row counts per table."""
-        with self._connect() as conn:
-            return {
-                "games":          conn.execute("SELECT COUNT(*) FROM games").fetchone()[0],
-                "players":        conn.execute("SELECT COUNT(*) FROM players").fetchone()[0],
-                "pitches":        conn.execute("SELECT COUNT(*) FROM pitches").fetchone()[0],
-                "fielding":       conn.execute("SELECT COUNT(*) FROM fielding").fetchone()[0],
-                "baserunning":    conn.execute("SELECT COUNT(*) FROM baserunning").fetchone()[0],
-                "ingested_files": conn.execute("SELECT COUNT(*) FROM ingested_files").fetchone()[0],
-                "db_path":        str(self.db_path),
-                "db_size_kb":     round(self.db_path.stat().st_size / 1024, 1)
-                                  if self.db_path.exists() else 0,
-            }
+        """Quick health-check: row counts per table (single round-trip)."""
+        with self._connection_context() as conn:
+            row = conn.execute("""
+                SELECT
+                    (SELECT COUNT(*) FROM games)          AS games,
+                    (SELECT COUNT(*) FROM players)        AS players,
+                    (SELECT COUNT(*) FROM pitches)        AS pitches,
+                    (SELECT COUNT(*) FROM fielding)       AS fielding,
+                    (SELECT COUNT(*) FROM baserunning)    AS baserunning,
+                    (SELECT COUNT(*) FROM ingested_files) AS ingested_files
+            """).fetchone()
+        summary = {
+            "games":          row[0],
+            "players":        row[1],
+            "pitches":        row[2],
+            "fielding":       row[3],
+            "baserunning":    row[4],
+            "ingested_files": row[5],
+        }
+        if self._remote:
+            summary["db_location"] = self._turso_url
+        else:
+            summary["db_path"] = str(self.db_path)
+            summary["db_size_kb"] = (
+                round(self.db_path.stat().st_size / 1024, 1) if self.db_path.exists() else 0
+            )
+        return summary
 
 
 # ---------------------------------------------------------------------------
