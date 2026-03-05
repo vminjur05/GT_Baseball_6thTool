@@ -870,6 +870,28 @@ class GTBaseballDashboard:
             st.subheader("Fielder Performance by Metric")
             st.plotly_chart(perf_chart, use_container_width=True)
 
+        # Reaction time percentiles boxplot
+        try:
+            st.subheader("Reaction Time Percentiles by Fielder")
+            # Controls: min samples and fielder selector
+            counts_series = defensive_analyzer.fielding_data.groupby('EventPlayerName')['FielderReaction'].apply(lambda s: pd.to_numeric(s, errors='coerce').dropna().shape[0]) if hasattr(defensive_analyzer, 'fielding_data') else pd.Series(dtype=int)
+            min_samples = st.slider("Minimum samples per fielder", min_value=1, max_value=10, value=1)
+            all_fielders = list(counts_series.index.sort_values()) if not counts_series.empty else []
+            selected_fielders = st.multiselect("Select fielders to include (empty = all)", options=all_fielders, default=None)
+
+            fig_rt, pct_df, counts = defensive_analyzer.create_reaction_time_boxplot(min_samples=min_samples, selected_fielders=selected_fielders)
+            if fig_rt:
+                st.plotly_chart(fig_rt, use_container_width=True)
+                with st.expander("Show percentile table"):
+                    st.dataframe(pct_df, use_container_width=True)
+            else:
+                st.info("Not enough reaction time samples to show boxplot. Lower the minimum samples or upload richer data.")
+                if not counts.empty:
+                    with st.expander("Per-fielder sample counts"):
+                        st.dataframe(counts.to_frame('samples'), use_container_width=True)
+        except Exception as _e:
+            st.info("Reaction time boxplot unavailable: " + str(_e))
+
         st.subheader("Coaching Recommendations")
         insights = defensive_analyzer.reaction_time_coaching_insights()
         if insights["players_needing_improvement"]:
