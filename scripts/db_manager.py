@@ -215,14 +215,23 @@ class GTBaseballDB:
     ingested_files— content-hash ledger to block identical uploads
     """
 
-    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH):
+    def __init__(self, db_path: str | Path = DEFAULT_DB_PATH, force_local: bool = False):
         self.db_path = Path(db_path)
-        self._turso_url, self._turso_token = _get_turso_credentials()
+        self._force_local = bool(force_local)
+        if self._force_local:
+            self._turso_url, self._turso_token = (None, None)
+        else:
+            self._turso_url, self._turso_token = _get_turso_credentials()
         self._remote = bool(self._turso_url and self._turso_token and _LIBSQL_OK)
         if not self._remote:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
-        mode = f"Turso ({self._turso_url})" if self._remote else str(self.db_path)
+        if self._remote:
+            mode = f"Turso ({self._turso_url})"
+        elif self._force_local:
+            mode = f"local (forced) {self.db_path}"
+        else:
+            mode = str(self.db_path)
         logger.info("GTBaseballDB ready — %s", mode)
 
     # ------------------------------------------------------------------
@@ -336,6 +345,11 @@ class GTBaseballDB:
                 row_count      INTEGER NOT NULL DEFAULT 0,
                 created_at     TEXT DEFAULT (datetime('now'))
             )""",
+            """CREATE TABLE IF NOT EXISTS app_meta (
+                key         TEXT PRIMARY KEY,
+                value       TEXT,
+                updated_at  TEXT DEFAULT (datetime('now'))
+            )""",
             "CREATE INDEX IF NOT EXISTS idx_pitches_game       ON pitches(game_id)",
             "CREATE INDEX IF NOT EXISTS idx_pitches_pitcher    ON pitches(pitcher_id)",
             "CREATE INDEX IF NOT EXISTS idx_pitches_batter     ON pitches(batter_id)",
@@ -361,6 +375,12 @@ class GTBaseballDB:
         """Apply ALTER TABLE migrations for older local SQLite databases."""
         def _cols(table):
             return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        def _table_exists(table):
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            return row is not None
 
         for col, sql in [
             ("columns_sig", "ALTER TABLE ingested_files ADD COLUMN columns_sig TEXT NOT NULL DEFAULT ''"),
@@ -382,6 +402,15 @@ class GTBaseballDB:
                 for pid, pname in conn.execute("SELECT player_id, player_name FROM players").fetchall():
                     team = "GT" if pname.strip().lower() in gt else "opponent"
                     conn.execute("UPDATE players SET team = ? WHERE player_id = ?", (team, pid))
+
+        if not _table_exists("app_meta"):
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS app_meta (
+                    key         TEXT PRIMARY KEY,
+                    value       TEXT,
+                    updated_at  TEXT DEFAULT (datetime('now'))
+                )"""
+            )
 
     # ------------------------------------------------------------------
     # GT Roster loader (cached per instance)
@@ -1259,6 +1288,12 @@ class GTBaseballDB:
                     (SELECT COUNT(*) FROM baserunning)    AS baserunning,
                     (SELECT COUNT(*) FROM ingested_files) AS ingested_files
             """).fetchone()
+            last_scrape_run_at = conn.execute(
+                "SELECT value FROM app_meta WHERE key = 'last_scrape_run_at'"
+            ).fetchone()
+            last_scrape_summary = conn.execute(
+                "SELECT value FROM app_meta WHERE key = 'last_scrape_summary'"
+            ).fetchone()
         summary = {
             "games":          row[0],
             "players":        row[1],
@@ -1266,6 +1301,8 @@ class GTBaseballDB:
             "fielding":       row[3],
             "baserunning":    row[4],
             "ingested_files": row[5],
+            "last_scrape_run_at": last_scrape_run_at[0] if last_scrape_run_at else None,
+            "last_scrape_summary": json.loads(last_scrape_summary[0]) if last_scrape_summary and last_scrape_summary[0] else None,
         }
         if self._remote:
             summary["db_location"] = self._turso_url
@@ -1275,6 +1312,31 @@ class GTBaseballDB:
                 round(self.db_path.stat().st_size / 1024, 1) if self.db_path.exists() else 0
             )
         return summary
+
+    # ------------------------------------------------------------------
+    # App metadata helpers
+    # ------------------------------------------------------------------
+
+    def get_meta(self, key: str, default: Optional[str] = None) -> Optional[str]:
+        with self._connection_context() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_meta WHERE key = ?",
+                (_clean_str(key),),
+            ).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, key: str, value: str):
+        with self._connection_context() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_meta (key, value, updated_at)
+                VALUES (?, ?, datetime('now'))
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = datetime('now')
+                """,
+                (_clean_str(key), _clean_str(value)),
+            )
 
 
 # ---------------------------------------------------------------------------
