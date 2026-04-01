@@ -1,3 +1,4 @@
+from pyparsing import col
 import streamlit as st  # type: ignore
 import pandas as pd
 import numpy as np
@@ -880,7 +881,9 @@ class GTBaseballDashboard:
         else:
             pos_df = pd.DataFrame(positioning).T
             for col in pos_df.columns:
-                pos_df[col] = pd.to_numeric(pos_df[col], errors="ignore")
+                converted = pd.to_numeric(pos_df[col], errors="coerce")
+                if not converted.isna().all():  # only replace if conversion made sense
+                    pos_df[col] = converted
 
             st.subheader("Fielder Positioning Summary")
             st.dataframe(pos_df, use_container_width=True)
