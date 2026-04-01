@@ -261,3 +261,70 @@ class DefensiveAnalytics:
             }
         
         return insights
+
+    def create_reaction_time_boxplot(
+        self,
+        min_samples: int = 1,
+        selected_fielders: List[str] = None,
+        percentile_list: List[int] = [10, 25, 50, 75, 90],
+    ) -> Tuple:
+        """
+        Build a Plotly box-and-whisker figure for reaction times per fielder.
+
+        Returns a tuple: (fig or None, percentiles_df or None, counts_series)
+        - fig: Plotly Figure or None if insufficient data
+        - percentiles_df: DataFrame of requested percentiles per fielder (or None)
+        - counts: Series with sample counts per fielder
+        """
+        if self.fielding_data is None or len(self.fielding_data) == 0:
+            return None, None, pd.Series(dtype=int)
+
+        # Ensure numeric reaction column exists
+        if 'FielderReaction' not in self.fielding_data.columns:
+            return None, None, pd.Series(dtype=int)
+
+        df = self.fielding_data.copy()
+        df['FielderReaction'] = pd.to_numeric(df['FielderReaction'], errors='coerce')
+
+        counts = df.groupby('EventPlayerName')['FielderReaction'].apply(lambda s: s.dropna().shape[0])
+        # Filter players by min_samples
+        eligible = counts[counts >= int(min_samples)].sort_values(ascending=False)
+
+        # If user requested a selection, intersect with eligible players
+        if selected_fielders:
+            eligible = eligible[eligible.index.isin(selected_fielders)]
+
+        if eligible.empty:
+            return None, None, counts.sort_values(ascending=False)
+
+        # Prepare long-form DataFrame for px.box
+        plot_df = (
+            df[df['EventPlayerName'].isin(eligible.index)]
+            .dropna(subset=['FielderReaction'])
+            [['EventPlayerName', 'FielderReaction']]
+            .rename(columns={'EventPlayerName': 'Player', 'FielderReaction': 'Reaction'})
+        )
+
+        # Compute percentiles table
+        pct_df = plot_df.groupby('Player')['Reaction'].quantile(
+            [p / 100.0 for p in percentile_list]
+        ).unstack(level=1)
+        # Rename columns to readable percent names
+        pct_df.columns = [f'p{int(c*100)}' for c in pct_df.columns]
+        pct_df = pct_df.round(3)
+
+        # Build box plot
+        try:
+            fig = px.box(
+                plot_df,
+                x='Player',
+                y='Reaction',
+                points='all',
+                title='Reaction Time Percentiles by Fielder',
+                labels={'Reaction': 'Reaction Time (s)', 'Player': 'Fielder'},
+            )
+            fig.update_layout(margin=dict(t=60), height=450)
+        except Exception:
+            fig = None
+
+        return fig, pct_df, counts.sort_values(ascending=False)
