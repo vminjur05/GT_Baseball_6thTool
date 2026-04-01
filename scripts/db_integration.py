@@ -35,7 +35,7 @@ except ImportError:
 
 def _get_db() -> "GTBaseballDB":
     if "gt_db" not in st.session_state:
-        st.session_state.gt_db = GTBaseballDB("data/gt_baseball.db")
+        st.session_state.gt_db = GTBaseballDB("data/gt_baseball.db", force_local=True)
     return st.session_state.gt_db
 
 
