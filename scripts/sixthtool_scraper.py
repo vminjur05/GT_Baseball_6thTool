@@ -1,6 +1,6 @@
 """
 6th Tool web scraper utilities.
-Extracts all match CSVs and ingests them into the configured GT database with dedupe.
+Extracts all match CSVs and ingests them into the configured GT database with dedupe. 
 """
 
 from __future__ import annotations
