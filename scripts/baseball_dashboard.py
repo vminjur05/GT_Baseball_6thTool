@@ -10,6 +10,7 @@ from data_loader import GTBaseballDataLoader
 from baseball_analyzer import GTBaseballAnalyzer
 from report_generator import ReportGenerator
 from db_integration import render_database_tab, auto_save_to_db, render_duplicate_warning
+from sixthtool_scraper import scrape_all_matches_to_db
 
 # ---------------------------------------------------------------------------
 # Session persistence — HMAC-signed URL token (deployment-safe, no files)
@@ -184,6 +185,68 @@ class GTBaseballDashboard:
                 from db_integration import _get_db
                 db = _get_db()
                 summary = db.db_summary()
+                last_scrape_at = summary.get("last_scrape_run_at")
+                last_scrape_summary = summary.get("last_scrape_summary")
+
+                st.subheader("6th Tool Sync")
+                if last_scrape_at:
+                    try:
+                        last_dt = pd.to_datetime(last_scrape_at, utc=True)
+                        last_est = last_dt.tz_convert("America/New_York")
+                        last_fmt = last_est.strftime("%b %d, %Y %I:%M %p ET")
+                    except Exception:
+                        last_fmt = last_scrape_at
+                    st.caption(f"Last scrape run: {last_fmt}")
+                else:
+                    st.caption("Last scrape run: never")
+                if isinstance(last_scrape_summary, dict):
+                    st.caption(
+                        "Last run summary — "
+                        f"inserted: {last_scrape_summary.get('inserted', 0)}, "
+                        f"skipped: {last_scrape_summary.get('skipped', 0)}, "
+                        f"duplicates: {last_scrape_summary.get('duplicate', 0)}, "
+                        f"errors: {last_scrape_summary.get('errors', 0)}"
+                    )
+
+                sc1, sc2, sc3 = st.columns([2, 2, 1.2])
+                with sc1:
+                    scrape_username = st.text_input(
+                        "6th Tool Username",
+                        key="scrape_username",
+                    )
+                with sc2:
+                    scrape_password = st.text_input(
+                        "6th Tool Password",
+                        type="password",
+                        key="scrape_password",
+                    )
+                with sc3:
+                    scrape_clicked = st.button("Fetch All Matches to DB", type="primary")
+
+                if scrape_clicked:
+                    if not scrape_username or not scrape_password:
+                        st.error("Please enter 6th Tool username and password.")
+                    else:
+                        with st.spinner("Scraping all match CSVs and syncing to database..."):
+                            try:
+                                run_summary = scrape_all_matches_to_db(
+                                    scrape_username,
+                                    scrape_password,
+                                    base_url="https://6thtool.smt.com",
+                                )
+                                st.success(
+                                    "Sync complete. "
+                                    f"Inserted: {run_summary['inserted']}, "
+                                    f"Skipped: {run_summary['skipped']}, "
+                                    f"Duplicates: {run_summary['duplicate']}, "
+                                    f"Errors: {run_summary['errors']}"
+                                )
+                                st.caption("Saved to local database: `data/gt_baseball.db`")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"6th Tool sync failed: {e}")
+
+                st.divider()
                 if summary["games"] > 0:
                     st.info(
                         f"📦 Database has {summary['games']} games "
