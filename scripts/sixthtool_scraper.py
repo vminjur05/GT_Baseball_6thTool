@@ -1,6 +1,6 @@
 """
 6th Tool web scraper utilities.
-Extracts all match CSVs and ingests into the local GT database with dedupe.
+Extracts all match CSVs and ingests them into the configured GT database with dedupe.
 """
 
 from __future__ import annotations
@@ -111,8 +111,8 @@ def scrape_all_matches_to_db(
     if not username or not password:
         raise RuntimeError("Username and password are required.")
 
-    # Force local DB for permanent storage during scrape.
-    db = GTBaseballDB("data/gt_baseball.db", force_local=True)
+    # Use the configured DB target. If Turso credentials are present, this writes there.
+    db = GTBaseballDB("data/gt_baseball.db")
     run_summary = {
         "inserted": 0,
         "skipped": 0,
@@ -259,9 +259,10 @@ def scrape_all_matches_to_db(
                             raise RuntimeError("Downloaded payload is not CSV data.")
 
                         df = pd.read_csv(io.BytesIO(raw_bytes))
-                        game_label = f"6thTool::{match_name}"
-                        safe_file = "".join(ch if ch.isalnum() else "_" for ch in match_name).strip("_")
-                        file_name = f"6thtool_{safe_file or 'match'}.csv"
+                        game_label = match_name
+                        # Keep the original downloaded CSV filename so DB duplicate checks
+                        # compare against the real 6th Tool artifact name already stored.
+                        file_name = os.path.basename(latest_path) or f"{match_name}.csv"
                         result = db.ingest_dataframe(
                             df,
                             game_label=game_label,
